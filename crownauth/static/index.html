@@ -326,12 +326,8 @@
           </div>
         </div>
         <div class="card" style="margin-top:14px">
-          <h3>Change owner password</h3>
-          <div class="row">
-            <div class="field"><label>Current</label><input id="pwOld" type="password" /></div>
-            <div class="field"><label>New (10+ chars)</label><input id="pwNew" type="password" /></div>
-            <button class="btn" id="btnPw">Update password</button>
-          </div>
+          <h3>Password</h3>
+          <p class="help">To change your owner password, open the <b>Settings</b> tab in the left menu.</p>
         </div>
       </section>
 
@@ -390,8 +386,17 @@
 
       <section id="view-brand" class="view hidden">
         <div class="card">
+          <h3>Change owner password</h3>
+          <p class="help">Your login password for this panel. Use a strong password you remember.</p>
+          <div class="row">
+            <div class="field"><label>Current password</label><input id="pwOld" type="password" autocomplete="current-password" /></div>
+            <div class="field"><label>New password (10+ chars)</label><input id="pwNew" type="password" autocomplete="new-password" /></div>
+            <button class="btn primary" id="btnPw">Update password</button>
+          </div>
+        </div>
+        <div class="card" style="margin-top:14px">
           <h3>Brand & deploy</h3>
-          <p class="help"><b>Critical:</b> phones cannot reach 127.0.0.1 on your PC. Set Client API host to your VPS or LAN IP, then rebuild the APK.</p>
+          <p class="help">Live host is already set to <b>crownauth-live.onrender.com</b>. Only change Client API host if you move servers — then rebuild APK once.</p>
           <div class="row">
             <div class="field"><label>App name</label><input id="bName" /></div>
             <div class="field" style="flex:2"><label>Tagline</label><input id="bTag" /></div>
