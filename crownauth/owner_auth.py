@@ -156,9 +156,20 @@ def check_owner_header(auth_header: Optional[str], x_owner_key: Optional[str], c
 
 
 def bootstrap_if_needed() -> str:
-    """Create random password file note if missing — returns plaintext once."""
+    """Create password if missing — returns plaintext once (or env override)."""
     ensure_dirs()
     note = SECRETS / "OWNER_PASSWORD_ONCE.txt"
+    # Cloud: OWNER_PASSWORD env always wins on boot (survives free-tier disk wipe)
+    env_pw = (os.environ.get("OWNER_PASSWORD") or "").strip()
+    if env_pw and len(env_pw) >= 8:
+        set_password(env_pw)
+        note.write_text(
+            "Owner password is set from OWNER_PASSWORD env (cloud).\n"
+            "Change it in panel Settings after login if you want.\n",
+            encoding="utf-8",
+        )
+        load_or_create_api_token()
+        return env_pw
     if has_password():
         return ""
     pw = secrets.token_urlsafe(14)
