@@ -564,13 +564,14 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
         # client public API
         if path == cpre + "/health":
             s = db.all_settings()
-            # minimal fingerprint
+            # minimal fingerprint + build stamp (confirms Render deploy)
             return self._json(
                 {
                     "ok": True,
                     "m": 1 if s.get("maintenance") else 0,
                     "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
+                    "b": "launch_pack_v1",
                 }
             )
         if path == cpre + "/config":
