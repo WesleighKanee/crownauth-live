@@ -419,6 +419,25 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": False, "error": "Unauthorized"}, 401)
         return False
 
+    def do_HEAD(self) -> None:  # noqa: N802
+        """UptimeRobot and similar monitors often use HEAD — was 501 before."""
+        path = urllib.parse.urlparse(self.path).path
+        cpre = self._client_prefix()
+        if path in (cpre + "/health", "/health", "/"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        # fall through: same routing as GET but we still may send a body; prefer 200 on known GETs
+        try:
+            self.do_GET()
+        except Exception:
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(204)
         self._cors()
@@ -571,7 +590,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "m": 1 if s.get("maintenance") else 0,
                     "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
-                    "b": "launch_pack_v1",
+                    "b": "launch_pack_v2",
                 }
             )
         if path == cpre + "/config":
@@ -671,20 +690,15 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 return self._json({"ok": True, "settings": db.all_settings()})
             if path == "/api/ops/status":
                 # free-tier ops glance for panel
-                from crownauth import notify as _n
-                from crownauth import persist as _p
-
-                tok, chat = _n.telegram_config()
                 return self._json(
                     {
                         "ok": True,
-                        "telegram_configured": bool(tok and chat),
-                        "discord_configured": bool(_n.discord_webhook()),
                         "github_backup": bool(
                             (os.environ.get("GITHUB_TOKEN") or "").strip()
                             and (os.environ.get("GITHUB_BACKUP_REPO") or "").strip()
                         ),
                         "public_host": (os.environ.get("PUBLIC_HOST") or db.get_setting("client_api_host") or ""),
+                        "build": "launch_pack_v1",
                     }
                 )
             if path.startswith("/api/licenses/") and path.endswith("/devices"):

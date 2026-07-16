@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Always-on entrypoint (Fly / Docker / VPS). PORT + PUBLIC_HOST from env.
 
-BUILD: launch_pack_v1 (csv export, backup drill, bulk mint, free alerts)
+BUILD: launch_pack_v2 (csv export, backup drill, bulk mint, HEAD health for UptimeRobot)
 """
 from __future__ import annotations
 

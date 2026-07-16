@@ -512,17 +512,6 @@ function fillBrand() {
   $("#bScheme").value = s.client_api_scheme || "http";
   $("#bClientPort").value = s.client_api_port ?? 8787;
   $("#bNote").value = s.seller_note || "";
-  if ($("#tgToken")) $("#tgToken").value = s.telegram_bot_token || "";
-  if ($("#tgChat")) $("#tgChat").value = s.telegram_chat_id || "";
-  if ($("#dcWebhook")) $("#dcWebhook").value = s.webhook_url || "";
-  if ($("#nEnabled")) $("#nEnabled").checked = s.notify_enabled !== false;
-  if ($("#nActivate")) $("#nActivate").checked = s.notify_on_activation !== false;
-  if ($("#nMint")) $("#nMint").checked = s.notify_on_mint !== false;
-  if ($("#nBan")) $("#nBan").checked = s.notify_on_ban !== false;
-  if ($("#nKill")) $("#nKill").checked = s.notify_on_kill !== false;
-  if ($("#nBackup")) $("#nBackup").checked = s.notify_on_backup !== false;
-  if ($("#nBackupFail")) $("#nBackupFail").checked = s.notify_on_backup_fail !== false;
-  if ($("#nFlood")) $("#nFlood").checked = s.notify_on_auth_fail_flood !== false;
   document.documentElement.style.setProperty("--accent", s.theme_accent || "#d4af37");
   const host = s.client_api_host || "127.0.0.1";
   const scheme = s.client_api_scheme || "http";
@@ -532,19 +521,16 @@ function fillBrand() {
   else if (scheme === "http" && (cport === 0 || cport === 80)) base = `http://${host}`;
   else base = `${scheme}://${host}:${cport}`;
   const bad = host === "127.0.0.1" || host === "localhost";
-  const tg = s.telegram_bot_token && s.telegram_chat_id ? "Telegram: set" : "Telegram: not set";
-  const dc = s.webhook_url ? "Discord webhook: set" : "Discord: not set";
   $("#brandMeta").textContent =
     (bad ? "⚠ Loopback host — only emulators work.\n" : "✓ Non-loopback host.\n") +
     `APK auth URL: ${base}/v2/auth\n` +
     `Panel path: ${s.panel_path || "/console"}\n` +
-    `${tg} · ${dc}\n` +
     `Ban/kill do NOT need rebuild. Host/scheme/port DO.`;
   api("/api/ops/status")
     .then((o) => {
-      if ($("#notifyStatus")) {
-        $("#notifyStatus").textContent =
-          `Ops: TG ${o.telegram_configured ? "ready" : "missing"} · DC ${o.discord_configured ? "ready" : "missing"} · GitHub backup ${o.github_backup ? "env ok" : "env missing"}`;
+      if ($("#opsStatus")) {
+        $("#opsStatus").textContent =
+          `GitHub backup: ${o.github_backup ? "env ok" : "env missing"} · host ${o.public_host || "—"}`;
       }
     })
     .catch(() => {});
@@ -890,44 +876,6 @@ function wire() {
     fillBrand();
   };
 
-  if ($("#btnNotifySave")) {
-    $("#btnNotifySave").onclick = async () => {
-      try {
-        await api("/api/settings", {
-          method: "POST",
-          body: JSON.stringify({
-            telegram_bot_token: ($("#tgToken") && $("#tgToken").value.trim()) || "",
-            telegram_chat_id: ($("#tgChat") && $("#tgChat").value.trim()) || "",
-            webhook_url: ($("#dcWebhook") && $("#dcWebhook").value.trim()) || "",
-            notify_enabled: !!( $("#nEnabled") && $("#nEnabled").checked ),
-            notify_on_activation: !!( $("#nActivate") && $("#nActivate").checked ),
-            notify_on_mint: !!( $("#nMint") && $("#nMint").checked ),
-            notify_on_ban: !!( $("#nBan") && $("#nBan").checked ),
-            notify_on_kill: !!( $("#nKill") && $("#nKill").checked ),
-            notify_on_backup: !!( $("#nBackup") && $("#nBackup").checked ),
-            notify_on_backup_fail: !!( $("#nBackupFail") && $("#nBackupFail").checked ),
-            notify_on_auth_fail_flood: !!( $("#nFlood") && $("#nFlood").checked ),
-          }),
-        });
-        toast("Alert settings saved");
-        await refreshDash();
-        fillBrand();
-      } catch (e) {
-        toast(e.message, true);
-      }
-    };
-  }
-  if ($("#btnNotifyTest")) {
-    $("#btnNotifyTest").onclick = async () => {
-      try {
-        const r = await api("/api/notify/test", { method: "POST", body: "{}" });
-        if ($("#notifyStatus")) $("#notifyStatus").textContent = r.message || (r.ok ? "sent" : "failed");
-        toast(r.ok ? "Test ping sent" : (r.message || "Failed"), !r.ok);
-      } catch (e) {
-        toast(e.message, true);
-      }
-    };
-  }
   if ($("#btnBackupNow")) {
     $("#btnBackupNow").onclick = async () => {
       try {
