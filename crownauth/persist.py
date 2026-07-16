@@ -141,13 +141,21 @@ def _apply_tar_b64(b64: str) -> None:
         tar.extractall(path=root)
 
 
-def backup_now(force: bool = False) -> tuple[bool, str]:
+def backup_now(force: bool = False, notify: bool = True) -> tuple[bool, str]:
     """Push data snapshot to private GitHub repo."""
     global _last_backup
     token = _env("GITHUB_TOKEN")
     repo = _env("GITHUB_BACKUP_REPO")  # owner/name
     if not token or not repo:
-        return False, "GITHUB_TOKEN / GITHUB_BACKUP_REPO not set"
+        msg = "GITHUB_TOKEN / GITHUB_BACKUP_REPO not set"
+        if notify:
+            try:
+                from crownauth import notify as _n
+
+                _n.notify_if("notify_on_backup_fail", f"⚠️ WhiteCrown backup skipped: {msg}", kind="backup_fail")
+            except Exception:
+                pass
+        return False, msg
     now = time.time()
     with _lock:
         if not force and (now - _last_backup) < _MIN_BACKUP_GAP:
@@ -185,9 +193,28 @@ def backup_now(force: bool = False) -> tuple[bool, str]:
             with urllib.request.urlopen(req2, timeout=60) as r2:
                 r2.read()
             _last_backup = time.time()
+            if notify and force:
+                try:
+                    from crownauth import notify as _n
+
+                    _n.notify_if(
+                        "notify_on_backup",
+                        f"✅ WhiteCrown backup ok\nRepo: {repo}\nUTC: {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}",
+                        kind="backup_ok",
+                    )
+                except Exception:
+                    pass
             return True, "backup ok"
         except Exception as e:
-            return False, f"backup failed: {e}"
+            err = f"backup failed: {e}"
+            if notify:
+                try:
+                    from crownauth import notify as _n
+
+                    _n.notify_if("notify_on_backup_fail", f"⚠️ WhiteCrown {err}", kind="backup_fail")
+                except Exception:
+                    pass
+            return False, err
 
 
 def restore_if_needed() -> tuple[bool, str]:
@@ -234,8 +261,65 @@ def schedule_backup() -> None:
 
     def _run() -> None:
         try:
-            backup_now(force=False)
+            backup_now(force=False, notify=True)
         except Exception:
             pass
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+def restore_drill() -> dict:
+    """
+    Soft restore drill (does NOT wipe production DB):
+    1) Force backup now
+    2) Verify GitHub object exists and decodes
+    Returns status dict for panel / scripts.
+    """
+    ok_b, msg_b = backup_now(force=True, notify=True)
+    if not ok_b:
+        return {"ok": False, "step": "backup", "message": msg_b}
+
+    token = _env("GITHUB_TOKEN")
+    repo = _env("GITHUB_BACKUP_REPO")
+    try:
+        api = f"https://api.github.com/repos/{repo}/contents/crownauth-backup.tar.gz.b64"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "crownauth-backup",
+        }
+        req = urllib.request.Request(api, headers=headers)
+        with urllib.request.urlopen(req, timeout=60) as r:
+            meta = json.loads(r.read().decode())
+        content_b64 = meta.get("content", "").replace("\n", "")
+        file_text = base64.b64decode(content_b64).decode("ascii")
+        raw = base64.b64decode(file_text.encode("ascii"))
+        size = len(raw)
+        if size < 100:
+            return {"ok": False, "step": "verify", "message": "backup blob too small"}
+        try:
+            from crownauth import notify as _n
+
+            _n.notify_if(
+                "notify_on_backup",
+                f"🧪 Restore drill OK\nRepo: {repo}\nBlob bytes: {size}\nBackup step: {msg_b}",
+                kind="drill",
+            )
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "step": "done",
+            "message": f"backup + verify ok ({size} bytes compressed)",
+            "backup": msg_b,
+            "bytes": size,
+            "sha": (meta.get("sha") or "")[:12],
+        }
+    except Exception as e:
+        try:
+            from crownauth import notify as _n
+
+            _n.notify_if("notify_on_backup_fail", f"⚠️ Restore drill failed: {e}", kind="drill_fail")
+        except Exception:
+            pass
+        return {"ok": False, "step": "verify", "message": str(e)}

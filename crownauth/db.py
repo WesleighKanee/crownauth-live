@@ -44,6 +44,17 @@ DEFAULT_SETTINGS = {
     "max_failed_auth": 12,
     "ban_duration_sec": 3600,
     "webhook_url": "",
+    # Free Telegram Bot API (BotFather) — no paid plan
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "notify_enabled": True,
+    "notify_on_activation": True,
+    "notify_on_mint": True,
+    "notify_on_ban": True,
+    "notify_on_backup": True,
+    "notify_on_backup_fail": True,
+    "notify_on_kill": True,
+    "notify_on_auth_fail_flood": True,
     "theme_accent": "#c9a227",
     "seller_note": "Keys are non-transferable. HWID locked by default.",
     "client_api_host": "127.0.0.1",
@@ -499,7 +510,7 @@ def get_license(lid: int) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def list_licenses(status: Optional[str] = None, q: str = "") -> list[dict]:
+def list_licenses(status: Optional[str] = None, q: str = "", limit: int = 500) -> list[dict]:
     con = connect()
     sql = "SELECT * FROM licenses WHERE 1=1"
     args: list[Any] = []
@@ -510,7 +521,8 @@ def list_licenses(status: Optional[str] = None, q: str = "") -> list[dict]:
         sql += " AND (customer LIKE ? OR note LIKE ? OR token LIKE ? OR token_fp LIKE ? OR reseller LIKE ?)"
         like = f"%{q}%"
         args.extend([like, like, like, like, like])
-    sql += " ORDER BY id DESC LIMIT 500"
+    lim = max(1, min(int(limit or 500), 20000))
+    sql += f" ORDER BY id DESC LIMIT {lim}"
     rows = con.execute(sql, args).fetchall()
     con.close()
     out = []
@@ -521,6 +533,56 @@ def list_licenses(status: Optional[str] = None, q: str = "") -> list[dict]:
         d["duration_label"] = d.get("duration_label") or format_duration(sec)
         out.append(d)
     return out
+
+
+def licenses_csv(status: Optional[str] = None, q: str = "") -> str:
+    """Full CSV export for owner backup / delivery sheets."""
+    import csv
+    import io
+
+    rows = list_licenses(status, q, limit=20000)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(
+        [
+            "id",
+            "token",
+            "customer",
+            "note",
+            "status",
+            "tier",
+            "max_devices",
+            "duration_label",
+            "duration_seconds",
+            "start_mode",
+            "reseller",
+            "created_at",
+            "activated_at",
+            "expires_at",
+            "banned_reason",
+        ]
+    )
+    for d in rows:
+        w.writerow(
+            [
+                d.get("id"),
+                d.get("token"),
+                d.get("customer") or "",
+                d.get("note") or "",
+                d.get("status"),
+                d.get("tier"),
+                d.get("max_devices"),
+                d.get("duration_label") or "",
+                d.get("duration_seconds") or 0,
+                d.get("start_mode") or "",
+                d.get("reseller") or "",
+                d.get("created_at") or 0,
+                d.get("activated_at") or 0,
+                d.get("expires_at") or 0,
+                d.get("banned_reason") or "",
+            ]
+        )
+    return buf.getvalue()
 
 
 def update_license(lid: int, **fields: Any) -> None:

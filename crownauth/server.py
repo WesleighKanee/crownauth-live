@@ -11,6 +11,7 @@ Release-hardened:
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import sys
 import threading
@@ -108,6 +109,16 @@ def client_auth(body: dict, ip: str) -> dict:
     rk = f"ip:{ip}"
     ok_rate, msg = db.rate_check(rk, int(s.get("max_failed_auth", 12)), int(s.get("ban_duration_sec", 3600)))
     if not ok_rate:
+        try:
+            from crownauth import notify as _n
+
+            _n.notify_if(
+                "notify_on_auth_fail_flood",
+                f"🚫 Rate limit hit\nIP: {ip}\n{msg}",
+                kind="rate",
+            )
+        except Exception:
+            pass
         return client_err(msg)
 
     if db.blacklist_hit("hwid", hwid_hash(hwid)) or db.blacklist_hit("ip", ip):
@@ -156,7 +167,8 @@ def client_auth(body: dict, ip: str) -> dict:
         return client_err("License inactive")
 
     now = int(time.time())
-    if int(lic["activated_at"] or 0) == 0:
+    first_activation = int(lic["activated_at"] or 0) == 0
+    if first_activation:
         secs = db.license_duration_seconds(lic)
         exp = 0 if secs <= 0 else now + secs
         db.update_license(lic["id"], activated_at=now, expires_at=exp)
@@ -190,6 +202,18 @@ def client_auth(body: dict, ip: str) -> dict:
     db.save_session(lic["id"], jti, hh, session, now, now + ttl, ip)
     db.rate_ok(rk)
     db.audit("client", "auth.ok", f"lic={lic['id']}")
+    if first_activation:
+        try:
+            from crownauth import notify as _n
+
+            cust = (lic.get("customer") or "").strip() or "—"
+            _n.notify_if(
+                "notify_on_activation",
+                f"🔑 First login\nID: {lic['id']}\nBuyer: {cust}\nIP: {ip}\nTier: {lic.get('tier') or 'std'}",
+                kind="activate",
+            )
+        except Exception:
+            pass
 
     toast = "Login Successfully..."
     if claims.tier == "owner":
@@ -625,6 +649,15 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 status = (qs.get("status") or [None])[0]
                 q = (qs.get("q") or [""])[0]
                 return self._json({"ok": True, "items": db.list_licenses(status, q)})
+            if path == "/api/licenses/export.csv":
+                status = (qs.get("status") or [None])[0]
+                q = (qs.get("q") or [""])[0]
+                csv_text = db.licenses_csv(status, q)
+                extra = {
+                    "Content-Disposition": 'attachment; filename="whitecrown_licenses.csv"',
+                    "Cache-Control": "no-store",
+                }
+                return self._send(200, csv_text.encode("utf-8"), "text/csv; charset=utf-8", extra_headers=extra)
             if path == "/api/plans":
                 return self._json({"ok": True, "items": db.list_plans()})
             if path == "/api/sessions":
@@ -635,6 +668,24 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 return self._json({"ok": True, "items": db.list_audit(300)})
             if path == "/api/settings":
                 return self._json({"ok": True, "settings": db.all_settings()})
+            if path == "/api/ops/status":
+                # free-tier ops glance for panel
+                from crownauth import notify as _n
+                from crownauth import persist as _p
+
+                tok, chat = _n.telegram_config()
+                return self._json(
+                    {
+                        "ok": True,
+                        "telegram_configured": bool(tok and chat),
+                        "discord_configured": bool(_n.discord_webhook()),
+                        "github_backup": bool(
+                            (os.environ.get("GITHUB_TOKEN") or "").strip()
+                            and (os.environ.get("GITHUB_BACKUP_REPO") or "").strip()
+                        ),
+                        "public_host": (os.environ.get("PUBLIC_HOST") or db.get_setting("client_api_host") or ""),
+                    }
+                )
             if path.startswith("/api/licenses/") and path.endswith("/devices"):
                 lid = int(path.split("/")[3])
                 return self._json({"ok": True, "items": db.list_devices(lid)})
@@ -809,7 +860,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                         plan = plans.get(int(plan_id))
                     except Exception:
                         plan = None
-                qty = max(1, min(200, int(body.get("qty") or 1)))
+                qty = max(1, min(500, int(body.get("qty") or 1)))
 
                 # duration: prefer value+unit, then seconds, then plan, then days legacy
                 if body.get("duration_unit") == "lifetime" or body.get("lifetime"):
@@ -835,15 +886,28 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 created = []
                 key_prefix = (body.get("key_prefix") or db.get_setting("key_prefix") or "WC")
                 key_length = int(body.get("key_length") or db.get_setting("key_length") or 10)
-                for _ in range(qty):
+                # bulk: optional customer prefix + sequential note tags
+                base_customer = (body.get("customer") or "").strip()
+                base_note = (body.get("note") or "").strip()
+                batch_tag = (body.get("batch_tag") or "").strip()
+                for i in range(qty):
                     tok = mint_license_token(prefix=str(key_prefix), length=key_length)
                     fp = token_fingerprint(tok)
+                    cust = base_customer
+                    note = base_note
+                    if qty > 1:
+                        if base_customer:
+                            cust = f"{base_customer} #{i + 1}"
+                        if batch_tag:
+                            note = (note + " " if note else "") + f"batch:{batch_tag}"
+                        elif not note:
+                            note = f"bulk {time.strftime('%Y%m%d')}"
                     lid = db.create_license(
                         tok,
                         fp,
                         plan_id=int(plan["id"]) if plan else None,
-                        customer=body.get("customer") or "",
-                        note=body.get("note") or "",
+                        customer=cust,
+                        note=note,
                         tier=tier,
                         max_devices=maxd,
                         duration_seconds=secs,
@@ -878,12 +942,27 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                             "tier": tier,
                             "max_devices": maxd,
                             "start_mode": start_mode,
+                            "customer": cust,
+                            "note": note,
                         }
                     )
                 try:
                     from crownauth.persist import schedule_backup
 
                     schedule_backup()
+                except Exception:
+                    pass
+                try:
+                    from crownauth import notify as _n
+
+                    _n.notify_if(
+                        "notify_on_mint",
+                        f"🧾 Minted {len(created)} key(s)\n"
+                        f"Duration: {db.format_duration(secs)}\n"
+                        f"Devices: {maxd} · Tier: {tier}"
+                        + (f"\nBatch: {batch_tag}" if batch_tag else ""),
+                        kind="mint",
+                    )
                 except Exception:
                     pass
                 return self._json({"ok": True, "created": created})
@@ -897,8 +976,21 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     pass
 
             if path == "/api/licenses/ban":
-                db.ban_license(int(body["id"]), body.get("reason") or "")
+                lid = int(body["id"])
+                reason = body.get("reason") or ""
+                db.ban_license(lid, reason)
                 _persist()
+                try:
+                    from crownauth import notify as _n
+
+                    lic = db.get_license(lid) or {}
+                    _n.notify_if(
+                        "notify_on_ban",
+                        f"⛔ Banned key #{lid}\nBuyer: {lic.get('customer') or '—'}\nReason: {reason or '—'}",
+                        kind="ban",
+                    )
+                except Exception:
+                    pass
                 return self._json({"ok": True})
             if path == "/api/licenses/unban":
                 db.unban_license(int(body["id"]))
@@ -963,10 +1055,21 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 return self._json({"ok": True, "id": pid})
 
             if path == "/api/kill":
-                db.set_setting("kill_switch", bool(body.get("enabled", True)))
+                en = bool(body.get("enabled", True))
+                db.set_setting("kill_switch", en)
                 if body.get("message"):
                     db.set_setting("kill_message", body["message"])
                 n = db.kick_all_sessions()
+                try:
+                    from crownauth import notify as _n
+
+                    _n.notify_if(
+                        "notify_on_kill",
+                        f"{'🛑 KILL SWITCH ON' if en else '✅ Kill switch OFF'} — kicked {n}",
+                        kind="kill",
+                    )
+                except Exception:
+                    pass
                 return self._json({"ok": True, "kicked": n, "config": signed_live_config()})
 
             if path == "/api/maintenance":
@@ -974,6 +1077,24 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 if body.get("message"):
                     db.set_setting("maintenance_message", body["message"])
                 return self._json({"ok": True, "config": signed_live_config()})
+
+            if path == "/api/backup/now":
+                from crownauth.persist import backup_now
+
+                ok, msg = backup_now(force=True, notify=True)
+                return self._json({"ok": ok, "message": msg})
+
+            if path == "/api/backup/drill":
+                from crownauth.persist import restore_drill
+
+                result = restore_drill()
+                return self._json(result)
+
+            if path == "/api/notify/test":
+                from crownauth import notify as _n
+
+                ok, msg = _n.test_ping()
+                return self._json({"ok": ok, "message": msg})
 
             if path == "/api/resellers/create":
                 try:

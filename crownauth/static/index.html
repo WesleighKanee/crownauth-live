@@ -126,6 +126,7 @@
               </select>
             </div>
             <button class="btn primary" id="btnKeyReload">Refresh</button>
+            <button class="btn" id="btnExportCsv" title="Download all matching keys as CSV">Export CSV</button>
           </div>
           <div style="overflow:auto">
             <table>
@@ -161,12 +162,16 @@
                 </div>
               </div>
               <div class="field">
-                <label>How many</label>
-                <input id="mintQty" type="number" value="1" min="1" max="100" />
+                <label>How many (bulk max 500)</label>
+                <input id="mintQty" type="number" value="1" min="1" max="500" />
               </div>
             </div>
 
             <div class="row" style="margin-top:10px">
+              <div class="field">
+                <label>Batch tag (bulk)</label>
+                <input id="mintBatch" placeholder="e.g. wave1-jul" />
+              </div>
               <div class="field">
                 <label>Devices</label>
                 <input id="mintDevs" type="number" value="1" min="1" max="20" />
@@ -227,14 +232,15 @@
 
             <div class="row" style="margin-top:16px">
               <button class="btn primary" id="btnMint">Generate</button>
-              <button class="btn" id="btnCopyMinted">Copy</button>
+              <button class="btn" id="btnCopyMinted">Copy keys</button>
+              <button class="btn" id="btnDlMintCsv">Download batch CSV</button>
               <button class="btn ghost" id="btnClearMint">Clear</button>
             </div>
             <p class="help" id="mintPreview" style="margin-top:12px">—</p>
           </div>
 
           <div class="card">
-            <h3>Keys</h3>
+            <h3>This batch</h3>
             <div class="created-box" id="mintOut" style="min-height:260px">Generated keys show here.</div>
           </div>
         </div>
@@ -418,6 +424,47 @@
             <button class="btn primary" id="btnBrandSave">Save</button>
           </div>
           <div class="created-box" id="brandMeta" style="margin-top:14px"></div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <h3>Free alerts — Telegram + Discord</h3>
+          <p class="help">
+            Telegram Bot API is <b>100% free</b>. Create a bot with <code>@BotFather</code>, message it once, put token + chat id here.
+            Optional: Discord channel webhook URL (also free).
+          </p>
+          <div class="row">
+            <div class="field" style="flex:2"><label>Telegram bot token</label><input id="tgToken" placeholder="123456:ABC…" autocomplete="off" /></div>
+            <div class="field"><label>Telegram chat id</label><input id="tgChat" placeholder="e.g. 591234567" /></div>
+          </div>
+          <div class="field" style="margin-top:8px"><label>Discord webhook URL (optional)</label><input id="dcWebhook" placeholder="https://discord.com/api/webhooks/…" /></div>
+          <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:12px">
+            <label class="switch"><input type="checkbox" id="nEnabled" checked /> Alerts on</label>
+            <label class="switch"><input type="checkbox" id="nActivate" checked /> First logins</label>
+            <label class="switch"><input type="checkbox" id="nMint" checked /> Key mint batches</label>
+            <label class="switch"><input type="checkbox" id="nBan" checked /> Bans</label>
+            <label class="switch"><input type="checkbox" id="nKill" checked /> Kill switch</label>
+            <label class="switch"><input type="checkbox" id="nBackup" checked /> Backup ok (manual/drill)</label>
+            <label class="switch"><input type="checkbox" id="nBackupFail" checked /> Backup fail</label>
+            <label class="switch"><input type="checkbox" id="nFlood" checked /> Auth flood / rate limit</label>
+          </div>
+          <div class="row" style="margin-top:14px">
+            <button class="btn primary" id="btnNotifySave">Save alerts</button>
+            <button class="btn" id="btnNotifyTest">Send test ping</button>
+          </div>
+          <p class="help" id="notifyStatus" style="margin-top:10px">—</p>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <h3>Backup & restore drill (free tier)</h3>
+          <p class="help">
+            Pushes DB + secrets to your private GitHub backup repo. Run the drill before opening sales — proves backup exists and decodes.
+            Does <b>not</b> wipe your live keys.
+          </p>
+          <div class="row">
+            <button class="btn primary" id="btnBackupNow">Backup now</button>
+            <button class="btn" id="btnBackupDrill">Run restore drill</button>
+          </div>
+          <p class="help" id="backupStatus" style="margin-top:10px">—</p>
         </div>
       </section>
     </main>

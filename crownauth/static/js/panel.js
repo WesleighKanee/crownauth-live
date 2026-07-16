@@ -9,9 +9,43 @@ const state = {
   plans: [],
   sessions: [],
   minted: [],
+  mintedFull: [],
   view: "dash",
   authed: false,
 };
+
+function downloadText(filename, text, mime = "text/plain") {
+  const blob = new Blob([text], { type: mime });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(a.href);
+    a.remove();
+  }, 500);
+}
+
+async function downloadCsvExport() {
+  const q = encodeURIComponent($("#keySearch")?.value || "");
+  const st = encodeURIComponent($("#keyStatus")?.value || "");
+  const headers = {};
+  if (state.session) headers["Authorization"] = "Bearer " + state.session;
+  const res = await fetch(`/api/licenses/export.csv?q=${q}&status=${st}`, {
+    headers,
+    credentials: "same-origin",
+  });
+  if (res.status === 401) {
+    logout(false);
+    throw new Error("Session expired — sign in again");
+  }
+  if (!res.ok) throw new Error("Export failed");
+  const text = await res.text();
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  downloadText(`whitecrown_licenses_${stamp}.csv`, text, "text/csv;charset=utf-8");
+  toast("CSV downloaded");
+}
 
 async function api(path, opts = {}) {
   const headers = {
@@ -478,6 +512,17 @@ function fillBrand() {
   $("#bScheme").value = s.client_api_scheme || "http";
   $("#bClientPort").value = s.client_api_port ?? 8787;
   $("#bNote").value = s.seller_note || "";
+  if ($("#tgToken")) $("#tgToken").value = s.telegram_bot_token || "";
+  if ($("#tgChat")) $("#tgChat").value = s.telegram_chat_id || "";
+  if ($("#dcWebhook")) $("#dcWebhook").value = s.webhook_url || "";
+  if ($("#nEnabled")) $("#nEnabled").checked = s.notify_enabled !== false;
+  if ($("#nActivate")) $("#nActivate").checked = s.notify_on_activation !== false;
+  if ($("#nMint")) $("#nMint").checked = s.notify_on_mint !== false;
+  if ($("#nBan")) $("#nBan").checked = s.notify_on_ban !== false;
+  if ($("#nKill")) $("#nKill").checked = s.notify_on_kill !== false;
+  if ($("#nBackup")) $("#nBackup").checked = s.notify_on_backup !== false;
+  if ($("#nBackupFail")) $("#nBackupFail").checked = s.notify_on_backup_fail !== false;
+  if ($("#nFlood")) $("#nFlood").checked = s.notify_on_auth_fail_flood !== false;
   document.documentElement.style.setProperty("--accent", s.theme_accent || "#d4af37");
   const host = s.client_api_host || "127.0.0.1";
   const scheme = s.client_api_scheme || "http";
@@ -487,12 +532,22 @@ function fillBrand() {
   else if (scheme === "http" && (cport === 0 || cport === 80)) base = `http://${host}`;
   else base = `${scheme}://${host}:${cport}`;
   const bad = host === "127.0.0.1" || host === "localhost";
+  const tg = s.telegram_bot_token && s.telegram_chat_id ? "Telegram: set" : "Telegram: not set";
+  const dc = s.webhook_url ? "Discord webhook: set" : "Discord: not set";
   $("#brandMeta").textContent =
     (bad ? "⚠ Loopback host — only emulators work.\n" : "✓ Non-loopback host.\n") +
     `APK auth URL: ${base}/v2/auth\n` +
     `Panel path: ${s.panel_path || "/console"}\n` +
-    `LAN QA: same Wi‑Fi. Public: deploy cloud (PUBLIC_HOSTING.md) → set https host → rebuild APK.\n` +
+    `${tg} · ${dc}\n` +
     `Ban/kill do NOT need rebuild. Host/scheme/port DO.`;
+  api("/api/ops/status")
+    .then((o) => {
+      if ($("#notifyStatus")) {
+        $("#notifyStatus").textContent =
+          `Ops: TG ${o.telegram_configured ? "ready" : "missing"} · DC ${o.discord_configured ? "ready" : "missing"} · GitHub backup ${o.github_backup ? "env ok" : "env missing"}`;
+      }
+    })
+    .catch(() => {});
 }
 
 async function refreshView() {
@@ -631,6 +686,9 @@ function wire() {
   };
 
   $("#btnKeyReload").onclick = () => refreshKeys().catch((e) => toast(e.message, true));
+  if ($("#btnExportCsv")) {
+    $("#btnExportCsv").onclick = () => downloadCsvExport().catch((e) => toast(e.message, true));
+  }
   $("#keySearch").onkeydown = (e) => e.key === "Enter" && refreshKeys();
 
   $("#mintPlan").onchange = applyPlanToMint;
@@ -650,41 +708,67 @@ function wire() {
   });
 
   $("#btnMint").onclick = async () => {
-    const planVal = $("#mintPlan").value;
-    const body = {
-      plan_id: planVal && planVal !== "custom" && planVal !== "" ? planVal : null,
-      customer: $("#mintCustomer").value,
-      note: $("#mintNote").value,
-      reseller: ($("#mintReseller") && $("#mintReseller").value) || "",
-      qty: Number($("#mintQty").value || 1),
-      also_offline: !!( $("#mintOffline") && $("#mintOffline").checked ),
-      tier: $("#mintTier").value || "std",
-      max_devices: Number($("#mintDevs").value || 1),
-      start_mode: $("#mintStart").value || "first_use",
-      duration_value: Number($("#mintDurVal").value || 0),
-      duration_unit: $("#mintDurUnit").value || "days",
-      key_prefix: ($("#mintPrefix") && $("#mintPrefix").value) || "WC",
-      key_length: Number(($("#mintKeyLen") && $("#mintKeyLen").value) || 10),
-    };
-    if (body.duration_unit === "lifetime") {
-      body.lifetime = true;
-      body.duration_value = 0;
+    try {
+      const planVal = $("#mintPlan").value;
+      const qty = Math.max(1, Math.min(500, Number($("#mintQty").value || 1)));
+      const body = {
+        plan_id: planVal && planVal !== "custom" && planVal !== "" ? planVal : null,
+        customer: $("#mintCustomer").value,
+        note: $("#mintNote").value,
+        batch_tag: ($("#mintBatch") && $("#mintBatch").value) || "",
+        reseller: ($("#mintReseller") && $("#mintReseller").value) || "",
+        qty,
+        also_offline: !!( $("#mintOffline") && $("#mintOffline").checked ),
+        tier: $("#mintTier").value || "std",
+        max_devices: Number($("#mintDevs").value || 1),
+        start_mode: $("#mintStart").value || "first_use",
+        duration_value: Number($("#mintDurVal").value || 0),
+        duration_unit: $("#mintDurUnit").value || "days",
+        key_prefix: ($("#mintPrefix") && $("#mintPrefix").value) || "WC",
+        key_length: Number(($("#mintKeyLen") && $("#mintKeyLen").value) || 10),
+      };
+      if (body.duration_unit === "lifetime") {
+        body.lifetime = true;
+        body.duration_value = 0;
+      }
+      if (qty >= 50 && !confirm(`Mint ${qty} keys now?`)) return;
+      const r = await api("/api/licenses/create", { method: "POST", body: JSON.stringify(body) });
+      state.mintedFull = r.created || [];
+      state.minted = state.mintedFull.map((c) => c.token);
+      $("#mintOut").textContent = state.mintedFull
+        .map((c) => `${c.token}   (${c.duration || "?"} · ${c.tier} · ${c.max_devices} dev)`)
+        .join("\n");
+      toast(`Created ${state.minted.length}`);
+      refreshKeys().catch(() => {});
+    } catch (e) {
+      toast(e.message || "Mint failed", true);
     }
-    const r = await api("/api/licenses/create", { method: "POST", body: JSON.stringify(body) });
-    state.minted = (r.created || []).map((c) => c.token);
-    $("#mintOut").textContent = (r.created || [])
-      .map((c) => `${c.token}   (${c.duration || "?"} · ${c.tier} · ${c.max_devices} dev)`)
-      .join("\n");
-    toast(`Created ${state.minted.length}`);
-    refreshKeys().catch(() => {});
   };
   $("#btnCopyMinted").onclick = async () => {
     if (!state.minted.length) return toast("Nothing to copy", true);
     await navigator.clipboard.writeText(state.minted.join("\n"));
     toast("Copied");
   };
+  if ($("#btnDlMintCsv")) {
+    $("#btnDlMintCsv").onclick = () => {
+      if (!state.mintedFull.length) return toast("Generate a batch first", true);
+      const lines = ["id,token,duration,tier,max_devices,customer,note,start_mode"];
+      for (const c of state.mintedFull) {
+        const esc = (x) => `"${String(x ?? "").replace(/"/g, '""')}"`;
+        lines.push(
+          [c.id, c.token, c.duration, c.tier, c.max_devices, c.customer || "", c.note || "", c.start_mode || ""]
+            .map(esc)
+            .join(",")
+        );
+      }
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      downloadText(`whitecrown_batch_${stamp}.csv`, lines.join("\n"), "text/csv;charset=utf-8");
+      toast("Batch CSV downloaded");
+    };
+  }
   $("#btnClearMint").onclick = () => {
     state.minted = [];
+    state.mintedFull = [];
     $("#mintOut").textContent = "Keys appear here after generate…";
   };
 
@@ -805,6 +889,73 @@ function wire() {
     toast("Saved — rebuild APK if host/scheme changed");
     fillBrand();
   };
+
+  if ($("#btnNotifySave")) {
+    $("#btnNotifySave").onclick = async () => {
+      try {
+        await api("/api/settings", {
+          method: "POST",
+          body: JSON.stringify({
+            telegram_bot_token: ($("#tgToken") && $("#tgToken").value.trim()) || "",
+            telegram_chat_id: ($("#tgChat") && $("#tgChat").value.trim()) || "",
+            webhook_url: ($("#dcWebhook") && $("#dcWebhook").value.trim()) || "",
+            notify_enabled: !!( $("#nEnabled") && $("#nEnabled").checked ),
+            notify_on_activation: !!( $("#nActivate") && $("#nActivate").checked ),
+            notify_on_mint: !!( $("#nMint") && $("#nMint").checked ),
+            notify_on_ban: !!( $("#nBan") && $("#nBan").checked ),
+            notify_on_kill: !!( $("#nKill") && $("#nKill").checked ),
+            notify_on_backup: !!( $("#nBackup") && $("#nBackup").checked ),
+            notify_on_backup_fail: !!( $("#nBackupFail") && $("#nBackupFail").checked ),
+            notify_on_auth_fail_flood: !!( $("#nFlood") && $("#nFlood").checked ),
+          }),
+        });
+        toast("Alert settings saved");
+        await refreshDash();
+        fillBrand();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+  }
+  if ($("#btnNotifyTest")) {
+    $("#btnNotifyTest").onclick = async () => {
+      try {
+        const r = await api("/api/notify/test", { method: "POST", body: "{}" });
+        if ($("#notifyStatus")) $("#notifyStatus").textContent = r.message || (r.ok ? "sent" : "failed");
+        toast(r.ok ? "Test ping sent" : (r.message || "Failed"), !r.ok);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+  }
+  if ($("#btnBackupNow")) {
+    $("#btnBackupNow").onclick = async () => {
+      try {
+        if ($("#backupStatus")) $("#backupStatus").textContent = "Backing up…";
+        const r = await api("/api/backup/now", { method: "POST", body: "{}" });
+        if ($("#backupStatus")) $("#backupStatus").textContent = r.message || (r.ok ? "ok" : "failed");
+        toast(r.ok ? "Backup done" : (r.message || "Backup failed"), !r.ok);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+  }
+  if ($("#btnBackupDrill")) {
+    $("#btnBackupDrill").onclick = async () => {
+      try {
+        if ($("#backupStatus")) $("#backupStatus").textContent = "Running restore drill…";
+        const r = await api("/api/backup/drill", { method: "POST", body: "{}" });
+        const msg = r.message || (r.ok ? "drill ok" : "drill failed");
+        if ($("#backupStatus")) {
+          $("#backupStatus").textContent =
+            msg + (r.bytes ? ` · ${r.bytes} bytes` : "") + (r.sha ? ` · sha ${r.sha}` : "");
+        }
+        toast(r.ok ? "Restore drill OK" : msg, !r.ok);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+  }
 }
 
 setInterval(() => {
