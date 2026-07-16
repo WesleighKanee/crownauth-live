@@ -1,0 +1,34 @@
+# Production reverse proxy — put THIS on the public internet, not raw :8787
+# Install Caddy, point DNS A record to your VPS, then:
+#   caddy run --config Caddyfile
+#
+# Replace auth.example.com with your domain.
+
+auth.example.com {
+	encode gzip
+
+	# Security headers
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	# Optional: basic IP allowlist for /console and /api (owner only)
+	# @owner path /console* /api* /auth* /static*
+	# handle @owner {
+	#     remote_ip 203.0.113.10 198.51.100.0/24
+	#     reverse_proxy 127.0.0.1:8787
+	# }
+
+	# Client + panel → local control plane (HTTP cleartext only on localhost)
+	reverse_proxy 127.0.0.1:8787
+}
+
+# After this works:
+# 1) Settings → Client API host = auth.example.com
+# 2) Prefer https:// in a future APK bake (or terminate TLS and keep http only on loopback)
+# 3) Rebuild APK
+# 4) Firewall: only 80/443 public; 8787 localhost only

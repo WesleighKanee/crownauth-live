@@ -1,0 +1,25 @@
+# Free Render web service — no paid plan
+# Dashboard: New + > Blueprint > connect this repo
+# Or: New Web Service > Docker > root = owner_panel
+#
+# After deploy, set PUBLIC_HOST to your-service.onrender.com
+# Keep awake free: UptimeRobot ping https://YOUR.onrender.com/v2/health every 5 min
+
+services:
+  - type: web
+    name: crownauth
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    healthCheckPath: /v2/health
+    envVars:
+      - key: PORT
+        value: "8787"
+      - key: CROWNAUTH_DATA
+        value: /data
+      - key: PUBLIC_HOST
+        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"

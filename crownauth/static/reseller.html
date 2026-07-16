@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reseller — WhiteCrown</title>
+  <link rel="stylesheet" href="/static/css/panel.css" />
+  <style>
+    .wrap { max-width: 720px; margin: 0 auto; padding: 28px 16px 48px; }
+    .hero { margin-bottom: 20px; }
+    .hero h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: -0.02em; }
+    .hero p { margin: 0; color: var(--muted); font-size: 14px; }
+    .quota { font-size: 13px; color: var(--accent); margin: 8px 0 0; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <h1>Reseller portal</h1>
+      <p>Create keys for your buyers. You cannot change server settings or ban other people's keys.</p>
+    </div>
+
+    <div id="loginBox" class="login-card" style="margin:0 auto">
+      <div class="login-mark">◆</div>
+      <h1>Reseller sign in</h1>
+      <p class="login-sub">Use the username and password your owner gave you.</p>
+      <form id="rsForm" onsubmit="return false;">
+        <div class="field"><label for="user">Username</label>
+          <input id="user" name="username" placeholder="your name" autocomplete="username" required tabindex="1" />
+        </div>
+        <div class="field" style="margin-top:10px"><label for="pass">Password</label>
+          <div class="pw-wrap">
+            <input id="pass" name="password" type="password" autocomplete="current-password" required tabindex="2" />
+            <button type="button" class="pw-toggle" id="btnShowPw" aria-label="Show password" tabindex="0">Show</button>
+          </div>
+        </div>
+        <button type="submit" class="btn primary" id="btnLogin" style="width:100%;margin-top:16px" tabindex="3">Sign in</button>
+      </form>
+      <p id="loginErr" class="login-err hidden" role="alert"></p>
+    </div>
+
+    <div id="appBox" class="hidden">
+      <div class="card" style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <div>
+            <b id="who">—</b>
+            <div class="quota" id="quota">—</div>
+          </div>
+          <button class="btn ghost" id="btnLogout">Log out</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:14px">
+        <h3>Create key</h3>
+        <div class="row">
+          <div class="field"><label>Length</label>
+            <div class="row" style="gap:8px">
+              <input id="durVal" type="number" value="7" min="1" style="flex:1" />
+              <select id="durUnit" style="flex:1">
+                <option value="hours">Hours</option>
+                <option value="days" selected>Days</option>
+                <option value="weeks">Weeks</option>
+              </select>
+            </div>
+          </div>
+          <div class="field"><label>How many</label><input id="qty" type="number" value="1" min="1" max="20" /></div>
+          <div class="field"><label>Devices</label><input id="devs" type="number" value="1" min="1" max="5" /></div>
+        </div>
+        <div class="field" style="margin-top:10px"><label>Buyer name</label><input id="buyer" placeholder="customer" /></div>
+        <button class="btn primary" id="btnMint" style="margin-top:14px">Generate</button>
+        <div class="created-box" id="out" style="margin-top:12px">Keys appear here.</div>
+      </div>
+
+      <div class="card">
+        <h3>Your keys</h3>
+        <button class="btn" id="btnRefresh" style="margin-bottom:10px">Refresh</button>
+        <div style="overflow:auto">
+          <table>
+            <thead><tr><th>Key</th><th>Length</th><th>Buyer</th><th>Status</th><th></th></tr></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script src="/static/js/reseller.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+data/
+secrets/
+*.pem
+*.hash
+OWNER_PASSWORD*
+.deploy/
+lab_env/
+backups/

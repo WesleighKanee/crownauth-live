@@ -1,0 +1,12 @@
+{
+  "provider": "cloudflare_named",
+  "hostname": "",
+  "scheme": "https",
+  "tunnel_name": "whitecrown-auth",
+  "tunnel_id": "",
+  "local_service": "http://127.0.0.1:8787",
+  "owner_path": "/app/owner/auth/login",
+  "user_path": "/app/user/auth/login",
+  "baked": false,
+  "notes": "One-time: run setup_fixed_url.ps1. Daily: double-click StartFixed.bat only."
+}

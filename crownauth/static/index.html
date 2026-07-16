@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow,noarchive" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Console</title>
+  <link rel="stylesheet" href="/static/css/panel.css" />
+</head>
+<body>
+  <!-- Owner login — simple Meta-style gate -->
+  <div id="loginScreen" class="login-wrap">
+    <div class="login-card">
+      <div class="login-mark">◆</div>
+      <h1 id="loginTitle">Sign in</h1>
+      <p class="login-sub" id="loginSub">Owner panel — enter your password to continue.</p>
+      <form id="loginForm" autocomplete="on" onsubmit="return false;">
+        <div class="field">
+          <label for="loginPw">Password</label>
+          <div class="pw-wrap">
+            <input
+              id="loginPw"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              placeholder="Password"
+              required
+              autofocus
+              tabindex="1"
+            />
+            <button type="button" class="pw-toggle" id="btnShowPw" aria-label="Show password" tabindex="0">Show</button>
+          </div>
+        </div>
+        <button type="submit" class="btn primary" id="btnLogin" style="width:100%;margin-top:16px" tabindex="2">
+          Sign in
+        </button>
+      </form>
+      <p id="loginErr" class="login-err hidden" role="alert"></p>
+      <p class="login-hint">Resellers use <a href="/app/user/auth/login">seller login</a> instead.</p>
+    </div>
+  </div>
+
+  <div id="appRoot" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">◆</div>
+        <div>
+          <h1 id="brandName">CONSOLE</h1>
+          <p>License control</p>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <button data-view="dash" class="active">Home</button>
+        <button data-view="keys">Licenses</button>
+        <button data-view="mint">Create keys</button>
+        <button data-view="sessions">Active users</button>
+        <button data-view="plans">Plans</button>
+        <button data-view="security">Live controls</button>
+        <button data-view="blacklist">Blocks</button>
+        <button data-view="audit">Activity</button>
+        <button data-view="resellers">Resellers</button>
+        <button data-view="brand">Settings</button>
+      </nav>
+      <div class="side-foot">
+        <button class="btn ghost hidden" id="btnLogout" style="width:100%;margin-bottom:8px">Sign out</button>
+        Create keys → send to buyers.<br/>
+        Ban / reset devices anytime.
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h2 id="viewTitle">Home</h2>
+          <div class="sub" id="viewSub">Overview of your license fleet</div>
+        </div>
+        <div class="pills">
+          <span class="pill live" id="pillLive">● online</span>
+          <span class="pill" id="pillApp">—</span>
+          <span class="pill" id="pillMode">—</span>
+        </div>
+      </div>
+
+      <section id="view-dash" class="view">
+        <div class="grid stats" id="statGrid"></div>
+        <div class="grid two" style="margin-top:14px">
+          <div class="card">
+            <h3>Emergency controls</h3>
+            <p class="help">These hit every connected device on the next heartbeat — no APK rebuild.</p>
+            <div class="row">
+              <button class="btn danger" id="btnKill">Kill switch ON</button>
+              <button class="btn good" id="btnUnkilled">Kill switch OFF</button>
+              <button class="btn" id="btnMaintOn">Maintenance ON</button>
+              <button class="btn" id="btnMaintOff">Maintenance OFF</button>
+              <button class="btn danger" id="btnKickAll">Kick everyone</button>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Health</h3>
+            <div id="posture" class="mono help" style="line-height:1.75"></div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:14px">
+          <h3>Quick start for sellers</h3>
+          <ol class="help" style="margin:0;padding-left:18px;line-height:1.7">
+            <li>Create keys under <b>Create keys</b> (pick a plan, set customer name).</li>
+            <li>Copy the key → deliver to buyer privately.</li>
+            <li>If leaked: open <b>Licenses</b> → Ban (instant).</li>
+            <li>Wrong phone after reinstall: <b>HWID reset</b>.</li>
+            <li>Before public launch: set API host under Settings → rebuild APK once.</li>
+          </ol>
+        </div>
+      </section>
+
+      <section id="view-keys" class="view hidden">
+        <div class="card">
+          <div class="row" style="margin-bottom:12px">
+            <div class="field"><label>Search</label><input id="keySearch" placeholder="name, note, or key…" /></div>
+            <div class="field"><label>Status</label>
+              <select id="keyStatus">
+                <option value="">All</option>
+                <option value="active">Active</option>
+                <option value="banned">Banned</option>
+                <option value="expired">Expired</option>
+              </select>
+            </div>
+            <button class="btn primary" id="btnKeyReload">Refresh</button>
+          </div>
+          <div style="overflow:auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th><th>Customer</th><th>Key</th><th>Tier</th><th>Status</th><th>Devices</th><th>Expires</th><th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="keyBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-mint" class="view hidden">
+        <div class="grid two">
+          <div class="card">
+            <h3>New key</h3>
+
+            <div class="row">
+              <div class="field" style="flex:1.4">
+                <label>Length</label>
+                <div class="row" style="gap:8px">
+                  <input id="mintDurVal" type="number" value="1" min="0" style="flex:1" />
+                  <select id="mintDurUnit" style="flex:1.2">
+                    <option value="hours">Hours</option>
+                    <option value="days" selected>Days</option>
+                    <option value="weeks">Weeks</option>
+                    <option value="months">Months</option>
+                    <option value="minutes">Minutes</option>
+                    <option value="lifetime">Lifetime</option>
+                  </select>
+                </div>
+              </div>
+              <div class="field">
+                <label>How many</label>
+                <input id="mintQty" type="number" value="1" min="1" max="100" />
+              </div>
+            </div>
+
+            <div class="row" style="margin-top:10px">
+              <div class="field">
+                <label>Devices</label>
+                <input id="mintDevs" type="number" value="1" min="1" max="20" />
+              </div>
+              <div class="field">
+                <label>Tier</label>
+                <select id="mintTier">
+                  <option value="std">Standard</option>
+                  <option value="vip">VIP</option>
+                  <option value="owner">Owner</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Timer starts</label>
+                <select id="mintStart">
+                  <option value="first_use" selected>First login</option>
+                  <option value="immediate">Now</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="row" style="margin-top:10px">
+              <div class="field" style="flex:1.5">
+                <label>Buyer</label>
+                <input id="mintCustomer" placeholder="name / discord" />
+              </div>
+              <div class="field">
+                <label>Note</label>
+                <input id="mintNote" placeholder="optional" />
+              </div>
+            </div>
+
+            <div class="row" style="margin-top:10px">
+              <div class="field">
+                <label>Key prefix</label>
+                <input id="mintPrefix" value="WC" maxlength="6" />
+              </div>
+              <div class="field">
+                <label>Key size</label>
+                <select id="mintKeyLen">
+                  <option value="8">Short (WC-XXXX-XXXX)</option>
+                  <option value="10" selected>Normal</option>
+                  <option value="12">Longer</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Saved plan (optional)</label>
+                <select id="mintPlan">
+                  <option value="custom">— none —</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- hidden legacy fields -->
+            <input type="hidden" id="mintReseller" value="" />
+            <input type="checkbox" id="mintOffline" class="hidden" />
+            <select id="mintPreset" class="hidden"><option value=""></option></select>
+
+            <div class="row" style="margin-top:16px">
+              <button class="btn primary" id="btnMint">Generate</button>
+              <button class="btn" id="btnCopyMinted">Copy</button>
+              <button class="btn ghost" id="btnClearMint">Clear</button>
+            </div>
+            <p class="help" id="mintPreview" style="margin-top:12px">—</p>
+          </div>
+
+          <div class="card">
+            <h3>Keys</h3>
+            <div class="created-box" id="mintOut" style="min-height:260px">Generated keys show here.</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-sessions" class="view hidden">
+        <div class="card">
+          <div class="row" style="margin-bottom:10px">
+            <button class="btn primary" id="btnSessReload">Refresh</button>
+            <button class="btn danger" id="btnSessKickAll">Kick all</button>
+          </div>
+          <table>
+            <thead><tr><th>Session</th><th>License</th><th>Customer</th><th>Device</th><th>IP</th><th>Expires</th><th></th></tr></thead>
+            <tbody id="sessBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="view-plans" class="view hidden">
+        <div class="grid two">
+          <div class="card">
+            <h3>Plan templates</h3>
+            <p class="help">Templates fill the Create keys form. Click a row to edit.</p>
+            <table>
+              <thead><tr><th>Name</th><th>Length</th><th>Devices</th><th>Tier</th><th>Price note</th><th>On</th></tr></thead>
+              <tbody id="planBody"></tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>Create / edit plan</h3>
+            <div class="field"><label>ID (leave empty for new)</label><input id="planId" placeholder="auto" /></div>
+            <div class="field"><label>Name</label><input id="planName" placeholder="e.g. 12h boost" /></div>
+            <div class="row">
+              <div class="field"><label>Duration amount</label><input id="planDurVal" type="number" value="1" min="0" /></div>
+              <div class="field"><label>Unit</label>
+                <select id="planDurUnit">
+                  <option value="minutes">Minutes</option>
+                  <option value="hours">Hours</option>
+                  <option value="days" selected>Days</option>
+                  <option value="weeks">Weeks</option>
+                  <option value="months">Months</option>
+                  <option value="lifetime">Lifetime</option>
+                </select>
+              </div>
+            </div>
+            <div class="field"><label>Max devices</label><input id="planDevs" type="number" value="1" min="1" max="50" /></div>
+            <div class="field"><label>Tier</label>
+              <select id="planTier">
+                <option value="std">Standard</option>
+                <option value="vip">VIP</option>
+                <option value="owner">Owner</option>
+              </select>
+            </div>
+            <div class="field"><label>Price note (display only)</label><input id="planPrice" placeholder="$3 / $10 / free trial" /></div>
+            <div class="row" style="margin-top:10px">
+              <button class="btn primary" id="btnPlanSave">Save plan</button>
+              <button class="btn ghost" id="btnPlanNew">Clear form</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-security" class="view hidden">
+        <div class="card">
+          <h3>Live security policy</h3>
+          <p class="help">Toggle → clients learn on next heartbeat. No rebuild for these.</p>
+          <div class="grid two">
+            <div>
+              <label class="switch"><input type="checkbox" id="sForceOnline" /> Require online login (recommended for sales)</label><br/><br/>
+              <label class="switch"><input type="checkbox" id="sAllowOffline" /> Allow offline signed keys</label><br/><br/>
+              <label class="switch"><input type="checkbox" id="sChallenge" /> Challenge-response login</label><br/><br/>
+              <label class="switch"><input type="checkbox" id="sMaint" /> Maintenance mode</label><br/><br/>
+              <label class="switch"><input type="checkbox" id="sKill" /> Kill switch</label><br/><br/>
+              <label class="switch"><input type="checkbox" id="sStealth" /> Stealth mode (generic errors / quiet logs)</label><br/><br/>
+              <label class="switch"><input type="checkbox" id="sGeneric" /> Generic client errors</label>
+            </div>
+            <div>
+              <div class="field"><label>Session length (seconds)</label><input id="sTtl" type="number" /></div>
+              <div class="field"><label>Heartbeat interval (seconds)</label><input id="sHb" type="number" /></div>
+              <div class="field"><label>Max failed logins / IP / hour</label><input id="sFails" type="number" /></div>
+              <div class="field"><label>Temp ban seconds after fails</label><input id="sBan" type="number" /></div>
+              <div class="field"><label>Kill message</label><input id="sKillMsg" /></div>
+              <div class="field"><label>Maintenance message</label><input id="sMaintMsg" /></div>
+              <div class="field"><label>Panel path (e.g. /console)</label><input id="sPanelPath" /></div>
+            </div>
+          </div>
+          <div class="row" style="margin-top:14px">
+            <button class="btn primary" id="btnSecSave">Apply now</button>
+          </div>
+        </div>
+        <div class="card" style="margin-top:14px">
+          <h3>Change owner password</h3>
+          <div class="row">
+            <div class="field"><label>Current</label><input id="pwOld" type="password" /></div>
+            <div class="field"><label>New (10+ chars)</label><input id="pwNew" type="password" /></div>
+            <button class="btn" id="btnPw">Update password</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-blacklist" class="view hidden">
+        <div class="card">
+          <div class="row">
+            <div class="field"><label>Type</label>
+              <select id="blKind"><option value="hwid">device hash</option><option value="ip">ip</option></select>
+            </div>
+            <div class="field" style="flex:2"><label>Value</label><input id="blVal" /></div>
+            <div class="field" style="flex:2"><label>Reason</label><input id="blReason" /></div>
+            <button class="btn danger" id="btnBlAdd">Block</button>
+          </div>
+          <table style="margin-top:12px">
+            <thead><tr><th>ID</th><th>Type</th><th>Value</th><th>Reason</th><th></th></tr></thead>
+            <tbody id="blBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="view-audit" class="view hidden">
+        <div class="card">
+          <table>
+            <thead><tr><th>Time</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead>
+            <tbody id="auditBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="view-resellers" class="view hidden">
+        <div class="grid two">
+          <div class="card">
+            <h3>Your resellers</h3>
+            <p class="help">They only mint keys (with quota). They cannot use kill switch, settings, or see your keys.</p>
+            <table>
+              <thead><tr><th>Name</th><th>Used / Quota</th><th>Max length</th><th>Devices</th><th>On</th></tr></thead>
+              <tbody id="rsBody"></tbody>
+            </table>
+            <p class="help" style="margin-top:12px">Reseller login link (share this): <code id="rsLink">/reseller</code></p>
+          </div>
+          <div class="card">
+            <h3>Add reseller</h3>
+            <div class="field"><label>Username</label><input id="rsName" placeholder="e.g. alex" /></div>
+            <div class="field" style="margin-top:8px"><label>Password</label><input id="rsPass" type="password" placeholder="min 6 chars" /></div>
+            <div class="row" style="margin-top:8px">
+              <div class="field"><label>Key quota</label><input id="rsQuota" type="number" value="50" min="1" /></div>
+              <div class="field"><label>Max key length (days)</label><input id="rsMaxDays" type="number" value="30" min="1" /></div>
+              <div class="field"><label>Max devices per key</label><input id="rsMaxDev" type="number" value="1" min="1" /></div>
+            </div>
+            <div class="field" style="margin-top:8px"><label>Note</label><input id="rsNote" placeholder="optional" /></div>
+            <button class="btn primary" id="btnRsCreate" style="margin-top:14px">Create reseller</button>
+            <p class="help" style="margin-top:12px" id="rsOut"></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-brand" class="view hidden">
+        <div class="card">
+          <h3>Brand & deploy</h3>
+          <p class="help"><b>Critical:</b> phones cannot reach 127.0.0.1 on your PC. Set Client API host to your VPS or LAN IP, then rebuild the APK.</p>
+          <div class="row">
+            <div class="field"><label>App name</label><input id="bName" /></div>
+            <div class="field" style="flex:2"><label>Tagline</label><input id="bTag" /></div>
+            <div class="field"><label>Accent</label><input id="bAccent" type="color" /></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Support URL</label><input id="bSupport" /></div>
+            <div class="field"><label>Discord</label><input id="bDiscord" /></div>
+            <div class="field"><label>API port</label><input id="bPort" type="number" /></div>
+            <div class="field"><label>Bind address</label><input id="bBind" /></div>
+            <div class="field" style="flex:2"><label>Client API host (baked into APK)</label><input id="bClientHost" placeholder="192.168.x.x or your-app.fly.dev" /></div>
+            <div class="field"><label>Scheme</label>
+              <select id="bScheme"><option value="http">http (LAN)</option><option value="https">https (cloud)</option></select>
+            </div>
+            <div class="field"><label>Port (0 = default)</label><input id="bClientPort" type="number" placeholder="8787 or 0 for 443" /></div>
+          </div>
+          <div class="field"><label>Seller note</label><textarea id="bNote"></textarea></div>
+          <div class="row" style="margin-top:10px">
+            <button class="btn primary" id="btnBrandSave">Save</button>
+          </div>
+          <div class="created-box" id="brandMeta" style="margin-top:14px"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script src="/static/js/panel.js"></script>
+</body>
+</html>
