@@ -767,7 +767,15 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
             except ValueError as e:
                 return self._json({"ok": False, "error": str(e)}, 400)
             db.audit("owner", "password.changed", "")
-            return self._json({"ok": True})
+            persist_msg = "local only"
+            try:
+                from crownauth.persist import schedule_backup, sync_owner_password_to_render
+
+                ok_s, persist_msg = sync_owner_password_to_render(new)
+                schedule_backup()
+            except Exception as e:
+                persist_msg = str(e)
+            return self._json({"ok": True, "persist": persist_msg})
 
         # client
         if path == cpre + "/auth":
@@ -784,6 +792,12 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 for k, v in body.items():
                     if k in db.DEFAULT_SETTINGS or k in db.all_settings():
                         db.set_setting(k, v)
+                try:
+                    from crownauth.persist import schedule_backup
+
+                    schedule_backup()
+                except Exception:
+                    pass
                 return self._json({"ok": True, "settings": db.all_settings(), "config": signed_live_config()})
 
             if path == "/api/licenses/create":
@@ -868,11 +882,21 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     )
                 return self._json({"ok": True, "created": created})
 
+            def _persist() -> None:
+                try:
+                    from crownauth.persist import schedule_backup
+
+                    schedule_backup()
+                except Exception:
+                    pass
+
             if path == "/api/licenses/ban":
                 db.ban_license(int(body["id"]), body.get("reason") or "")
+                _persist()
                 return self._json({"ok": True})
             if path == "/api/licenses/unban":
                 db.unban_license(int(body["id"]))
+                _persist()
                 return self._json({"ok": True})
             if path == "/api/licenses/extend":
                 secs = int(body.get("seconds") or 0)
@@ -881,9 +905,11 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 if not secs:
                     secs = int(body.get("days") or 7) * 86400
                 db.extend_license(int(body["id"]), seconds=secs)
+                _persist()
                 return self._json({"ok": True})
             if path == "/api/licenses/hwid_reset":
                 db.reset_hwid(int(body["id"]))
+                _persist()
                 return self._json({"ok": True})
             if path == "/api/licenses/update":
                 lid = int(body.pop("id"))
@@ -896,6 +922,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     if ik in allowed:
                         allowed[ik] = int(allowed[ik])
                 db.update_license(lid, **allowed)
+                _persist()
                 return self._json({"ok": True})
             if path == "/api/licenses/delete":
                 lid = int(body["id"])
@@ -908,6 +935,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 con.commit()
                 con.close()
                 db.audit("owner", "license.delete", str(lid))
+                _persist()
                 return self._json({"ok": True})
 
             if path == "/api/sessions/kick":

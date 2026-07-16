@@ -21,6 +21,15 @@ def main() -> None:
     pub = (os.environ.get("PUBLIC_HOST") or "").strip().lower()
     pub = pub.replace("https://", "").replace("http://", "").split("/")[0]
 
+    # Free tier: restore DB+secrets from GitHub backup before init (if wipe happened)
+    try:
+        from crownauth.persist import restore_if_needed, schedule_backup
+
+        ok_r, msg_r = restore_if_needed()
+        print(f"persist restore: {ok_r} {msg_r}")
+    except Exception as e:
+        print(f"persist restore skip: {e}")
+
     db.init_db()
     if pub:
         db.set_setting("client_api_host", pub)
@@ -37,6 +46,12 @@ def main() -> None:
     smod.PRIV, smod.PUB = load_or_create_keypair()
     once = owner_auth.bootstrap_if_needed()
     owner_auth.load_or_create_api_token()
+    try:
+        from crownauth.persist import schedule_backup
+
+        schedule_backup()
+    except Exception:
+        pass
 
     host_show = db.get_setting("client_api_host") or f"0.0.0.0:{port}"
     print("=" * 56)
