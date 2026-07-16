@@ -880,6 +880,12 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                             "start_mode": start_mode,
                         }
                     )
+                try:
+                    from crownauth.persist import schedule_backup
+
+                    schedule_backup()
+                except Exception:
+                    pass
                 return self._json({"ok": True, "created": created})
 
             def _persist() -> None:

@@ -159,13 +159,15 @@ def bootstrap_if_needed() -> str:
     """Create password if missing — returns plaintext once (or env override)."""
     ensure_dirs()
     note = SECRETS / "OWNER_PASSWORD_ONCE.txt"
-    # Cloud: OWNER_PASSWORD env always wins on boot (survives free-tier disk wipe)
+    # Cloud: OWNER_PASSWORD env used when no local hash yet (after wipe),
+    # or when FORCE_OWNER_PASSWORD=1. After Settings change we sync env so next wipe restores it.
     env_pw = (os.environ.get("OWNER_PASSWORD") or "").strip()
-    if env_pw and len(env_pw) >= 8:
+    force_env = (os.environ.get("FORCE_OWNER_PASSWORD") or "").strip() in ("1", "true", "yes")
+    if env_pw and len(env_pw) >= 8 and (force_env or not has_password()):
         set_password(env_pw)
         note.write_text(
-            "Owner password is set from OWNER_PASSWORD env (cloud).\n"
-            "Change it in panel Settings after login if you want.\n",
+            "Owner password applied from OWNER_PASSWORD env (cloud free-tier).\n"
+            "Changing password in Settings also updates Render env when configured.\n",
             encoding="utf-8",
         )
         load_or_create_api_token()
