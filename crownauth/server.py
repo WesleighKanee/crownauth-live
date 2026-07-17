@@ -120,7 +120,7 @@ def client_update_gate(body: dict) -> Optional[dict]:
         return None
     url = str(s.get("update_apk_url") or "").strip()
     if not url:
-        url = "https://github.com/WesleighKanee/crownauth-live/releases/latest/download/WhiteCrownV2_OWNER.apk"
+        url = "https://github.com/WesleighKanee/crownauth-live/releases/latest/download/WhiteCrownsLoaderV2.apk"
     msg = str(
         s.get("update_message")
         or "A new update is available — tap OK / allow install. Or open the download link."
@@ -687,7 +687,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "m": 1 if s.get("maintenance") else 0,
                     "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
-                    "b": "proto_v3_ota",
+                    "b": "ota_wc_v2",
                     "min_proto": int(s.get("min_client_protocol") or 3),
                     "min_vc": int(s.get("min_client_version_code") or 1),
                 }
