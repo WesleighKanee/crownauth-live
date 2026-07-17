@@ -241,6 +241,13 @@ def client_auth(body: dict, ip: str) -> dict:
         if not meta or time.time() - meta["t"] > 120:
             db.rate_fail(rk, int(s.get("max_failed_auth", 12)), int(s.get("ban_duration_sec", 3600)))
             return client_err("Challenge expired — retry")
+        # Bind challenge to the key it was issued for
+        try:
+            if meta.get("token_fp") and meta["token_fp"] != token_fingerprint(token):
+                db.rate_fail(rk, int(s.get("max_failed_auth", 12)), int(s.get("ban_duration_sec", 3600)))
+                return client_err("Challenge expired — retry")
+        except Exception:
+            pass
         if not check_proof(token, challenge, hwid, proof):
             db.rate_fail(rk, int(s.get("max_failed_auth", 12)), int(s.get("ban_duration_sec", 3600)))
             return client_err("Challenge proof failed")
@@ -490,6 +497,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _read_json(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
+        # Cap body to reduce free-tier memory DoS
+        if n > 262144:
+            return {}
         raw = self.rfile.read(n) if n else b"{}"
         try:
             return json.loads(raw.decode("utf-8") or "{}")
@@ -868,6 +878,10 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
         if path == "/auth/login":
             if db.get_setting("enable_owner_ip_allowlist") and not self._ip_allowed_owner(ip):
                 return self._json({"ok": False, "error": "Forbidden from this network"}, 403)
+            # Rate-limit panel password sprays
+            ok_rl, rl_msg = db.rate_check(f"owner_login:{ip}", 8, 900)
+            if not ok_rl:
+                return self._json({"ok": False, "error": rl_msg or "Too many attempts"}, 429)
             pw = body.get("password") or ""
             if not owner_auth.has_password():
                 owner_auth.bootstrap_if_needed()
@@ -878,6 +892,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     {"ok": True, "session": sess},
                     extra={"Set-Cookie": f"oc_session={sess}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200"},
                 )
+            db.rate_fail(f"owner_login:{ip}", 8, 900)
             db.audit("owner", "login.fail", ip)
             return self._json({"ok": False, "error": "Invalid password"}, 401)
 
@@ -885,8 +900,12 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
         if path == "/reseller/api/login":
             name = (body.get("name") or body.get("username") or "").strip()
             pw = body.get("password") or ""
+            ok_rl, rl_msg = db.rate_check(f"reseller_login:{ip}", 8, 900)
+            if not ok_rl:
+                return self._json({"ok": False, "error": rl_msg or "Too many attempts"}, 429)
             r = db.verify_reseller_password(name, pw)
             if not r:
+                db.rate_fail(f"reseller_login:{ip}", 8, 900)
                 return self._json({"ok": False, "error": "Wrong name or password"}, 401)
             sess = owner_auth.issue_reseller_session(int(r["id"]), r["name"])
             db.audit("reseller", "login.ok", r["name"])

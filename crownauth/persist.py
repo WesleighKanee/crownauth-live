@@ -138,7 +138,19 @@ def _apply_tar_b64(b64: str) -> None:
     sec = root / "secrets"
     sec.mkdir(parents=True, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
-        tar.extractall(path=root)
+        # Safe extract — no path traversal (tar slip)
+        for m in tar.getmembers():
+            name = (m.name or "").replace("\\", "/")
+            if name.startswith("/") or ".." in name.split("/"):
+                continue
+            base = name.split("/", 1)[0]
+            if base not in ("crownauth.db", "crownauth.db-wal", "crownauth.db-shm", "secrets") and not name.startswith(
+                "secrets/"
+            ):
+                # allow flat db names at root
+                if not name.startswith("crownauth.db"):
+                    continue
+            tar.extract(m, path=root)
 
 
 def backup_now(force: bool = False, notify: bool = True) -> tuple[bool, str]:
