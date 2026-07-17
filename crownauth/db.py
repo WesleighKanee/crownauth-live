@@ -100,8 +100,8 @@ DEFAULT_SETTINGS = {
     "min_client_protocol": 3,
     "min_client_version_code": 1,
     "force_update": False,
-    "update_apk_url": "",  # e.g. https://.../WhiteCrownV2_OWNER.apk
-    "update_message": "Update required — install the new WhiteCrown APK to continue.",
+    "update_apk_url": "https://github.com/WesleighKanee/crownauth-live/releases/latest/download/WhiteCrownV2_OWNER.apk",
+    "update_message": "A new update is available — install will open. Allow install, then reopen.",
     "blocked_build_ids": [],  # e.g. ["harden_v1","cracked_build"]
 }
 

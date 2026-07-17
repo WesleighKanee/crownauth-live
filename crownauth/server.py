@@ -108,10 +108,9 @@ def client_update_gate(body: dict) -> Optional[dict]:
     if not isinstance(blocked, list):
         blocked = []
     need = bool(s.get("force_update"))
+    # Only reject clients that *report* an old proto/vc — missing fields = old soft-compatible
+    # (do NOT block every non-reporting client; that stuck buyers with empty OTA URL)
     if min_proto and proto and proto < min_proto:
-        need = True
-    if min_proto and not proto:
-        # ancient client that doesn't send proto
         need = True
     if min_vc and vc and vc < min_vc:
         need = True
@@ -120,7 +119,12 @@ def client_update_gate(body: dict) -> Optional[dict]:
     if not need:
         return None
     url = str(s.get("update_apk_url") or "").strip()
-    msg = str(s.get("update_message") or "Update required — install the new APK.")
+    if not url:
+        url = "https://github.com/WesleighKanee/crownauth-live/releases/latest/download/WhiteCrownV2_OWNER.apk"
+    msg = str(
+        s.get("update_message")
+        or "A new update is available — tap OK / allow install. Or open the download link."
+    )
     return {
         "ok": False,
         "error": msg,
@@ -128,6 +132,7 @@ def client_update_gate(body: dict) -> Optional[dict]:
         "url": url,
         "min_proto": min_proto,
         "min_vc": min_vc,
+        "button": "Update Now",
     }
 
 
