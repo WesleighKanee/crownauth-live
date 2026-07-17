@@ -65,7 +65,7 @@ def client_err(msg: str, detail: str = "") -> dict:
 def live_config() -> dict[str, Any]:
     s = db.all_settings()
     return {
-        "v": 2,
+        "v": 3,
         "app_name": s.get("app_name"),
         "force_online": bool(s.get("force_online")),
         "allow_offline_envelope": bool(s.get("allow_offline_envelope")),
@@ -81,6 +81,53 @@ def live_config() -> dict[str, Any]:
         "discord_url": s.get("discord_url"),
         "theme_accent": s.get("theme_accent"),
         "cfg_epoch": int(time.time()),
+        "min_proto": int(s.get("min_client_protocol") or 3),
+        "min_vc": int(s.get("min_client_version_code") or 1),
+        "cur_proto": int(s.get("client_protocol_current") or 3),
+        "force_update": bool(s.get("force_update")),
+        "update_url": s.get("update_apk_url") or "",
+        "update_msg": s.get("update_message") or "",
+    }
+
+
+def client_update_gate(body: dict) -> Optional[dict]:
+    """Force old / cracked clients to update. Returns error payload or None if OK."""
+    s = db.all_settings()
+    try:
+        proto = int(body.get("proto") or body.get("protocol") or 0)
+    except Exception:
+        proto = 0
+    try:
+        vc = int(body.get("vc") or body.get("version_code") or 0)
+    except Exception:
+        vc = 0
+    bid = str(body.get("bid") or body.get("build") or "").strip()
+    min_proto = int(s.get("min_client_protocol") or 0)
+    min_vc = int(s.get("min_client_version_code") or 0)
+    blocked = s.get("blocked_build_ids") or []
+    if not isinstance(blocked, list):
+        blocked = []
+    need = bool(s.get("force_update"))
+    if min_proto and proto and proto < min_proto:
+        need = True
+    if min_proto and not proto:
+        # ancient client that doesn't send proto
+        need = True
+    if min_vc and vc and vc < min_vc:
+        need = True
+    if bid and bid in [str(x) for x in blocked]:
+        need = True
+    if not need:
+        return None
+    url = str(s.get("update_apk_url") or "").strip()
+    msg = str(s.get("update_message") or "Update required — install the new APK.")
+    return {
+        "ok": False,
+        "error": msg,
+        "action": "update",
+        "url": url,
+        "min_proto": min_proto,
+        "min_vc": min_vc,
     }
 
 
@@ -122,6 +169,10 @@ def client_auth(body: dict, ip: str) -> dict:
         return client_err(s.get("kill_message") or "Unavailable")
     if s.get("maintenance"):
         return client_err(s.get("maintenance_message") or "Unavailable")
+
+    gate = client_update_gate(body)
+    if gate:
+        return gate
 
     att_err = _attestation_reject(body, s)
     if att_err:
@@ -300,9 +351,14 @@ def client_heartbeat(body: dict, ip: str) -> dict:
     if s.get("maintenance"):
         return {"ok": False, "error": "Access denied", "action": "pause"}
 
+    gate = client_update_gate(body)
+    if gate:
+        gate["action"] = "update"
+        return gate
+
     att_err = _attestation_reject(body, s)
     if att_err:
-        return {"ok": False, "error": "Access denied", "action": "kill"}
+        return {"ok": False, "error": att_err, "action": "kill"}
 
     session = body.get("session") or ""
     hwid = (body.get("hwid") or "").strip()
@@ -626,7 +682,23 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "m": 1 if s.get("maintenance") else 0,
                     "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
-                    "b": "harden_v2_fix",
+                    "b": "proto_v3_ota",
+                    "min_proto": int(s.get("min_client_protocol") or 3),
+                    "min_vc": int(s.get("min_client_version_code") or 1),
+                }
+            )
+        if path == cpre + "/version":
+            s = db.all_settings()
+            return self._json(
+                {
+                    "ok": True,
+                    "proto": int(s.get("client_protocol_current") or 3),
+                    "min_proto": int(s.get("min_client_protocol") or 3),
+                    "min_vc": int(s.get("min_client_version_code") or 1),
+                    "force_update": bool(s.get("force_update")),
+                    "url": s.get("update_apk_url") or "",
+                    "message": s.get("update_message") or "",
+                    "blocked": s.get("blocked_build_ids") or [],
                 }
             )
         if path == cpre + "/config":

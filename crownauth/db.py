@@ -94,6 +94,15 @@ DEFAULT_SETTINGS = {
     # Clear toasts (not generic Access denied)
     "generic_errors": False,
     "stealth_mode": False,
+    # Protocol / OTA — kill old cracked APKs without touching updated buyers
+    # Client sends proto + vc (versionCode). Raise min_* to force upgrade.
+    "client_protocol_current": 3,
+    "min_client_protocol": 3,
+    "min_client_version_code": 1,
+    "force_update": False,
+    "update_apk_url": "",  # e.g. https://.../WhiteCrownV2_OWNER.apk
+    "update_message": "Update required — install the new WhiteCrown APK to continue.",
+    "blocked_build_ids": [],  # e.g. ["harden_v1","cracked_build"]
 }
 
 
