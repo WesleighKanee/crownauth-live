@@ -79,16 +79,20 @@ DEFAULT_SETTINGS = {
     # Extreme harden — client attestation (af bitfield)
     # bits: 1=debug 2=frida 4=xposed 8=NEVER (root required) 16=emu 32=hook/integrity 64=timing
     # Product = kernel loader plugin → ALL buyers are rooted. Never reject root.
+    # Attestation: Magisk/root kernel loaders false-positive easily.
+    # Only hard-reject clear Frida. Everything else is flag/log only.
     "require_client_attestation": True,
     "reject_frida": True,
-    "reject_xposed": True,
-    "reject_debugger": True,
-    "reject_integrity_fail": True,
+    "reject_xposed": False,
+    "reject_debugger": False,
+    "reject_integrity_fail": False,
     "reject_rooted": False,  # MUST stay false — Magisk/KernelSU required
     "reject_emulator": False,
     "expected_app_build": "harden_v2",
     "strict_build_id": False,
     "product_requires_root": True,
+    # Stealth was masking real errors as "Access denied" — off for clearer buyer toasts
+    "generic_errors": False,
 }
 
 

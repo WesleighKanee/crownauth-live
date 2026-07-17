@@ -89,29 +89,32 @@ def signed_live_config() -> str:
 
 
 def _attestation_reject(body: dict, s: dict) -> Optional[str]:
-    """Return error string if client environment is hostile; None if OK."""
+    """Return error string if client environment is hostile; None if OK.
+
+    Kernel-loader product: Magisk/root is normal. Only block clear Frida.
+    """
     if not s.get("require_client_attestation", True):
         return None
     try:
         af = int(body.get("af") or 0)
     except Exception:
         af = 0
-    # bitfield from Shield.java
-    if s.get("reject_debugger", True) and (af & 1):
-        return "Access denied"
+    # defaults are lenient — only Frida hard-blocks unless owner tightens settings
+    if s.get("reject_debugger", False) and (af & 1):
+        return "Environment blocked (debugger)"
     if s.get("reject_frida", True) and (af & 2):
-        return "Access denied"
-    if s.get("reject_xposed", True) and (af & 4):
-        return "Access denied"
-    # bit 8 = root — product requires root; NEVER reject
+        return "Environment blocked (instrumentation)"
+    if s.get("reject_xposed", False) and (af & 4):
+        return "Environment blocked (framework)"
+    # bit 8 root — NEVER reject
     if s.get("reject_emulator", False) and (af & 16):
-        return "Access denied"
-    if s.get("reject_integrity_fail", True) and (af & 32):
-        return "Access denied"
+        return "Environment blocked (emulator)"
+    if s.get("reject_integrity_fail", False) and (af & 32):
+        return "Environment blocked (integrity)"
     bid = str(body.get("bid") or "").strip()
     expect = str(s.get("expected_app_build") or "").strip()
     if s.get("strict_build_id") and expect and bid and bid != expect:
-        return "Access denied"
+        return "Environment blocked (build)"
     return None
 
 
@@ -625,7 +628,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "m": 1 if s.get("maintenance") else 0,
                     "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
-                    "b": "harden_v2",
+                    "b": "harden_v2_fix",
                 }
             )
         if path == cpre + "/config":
