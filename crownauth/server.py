@@ -89,24 +89,22 @@ def signed_live_config() -> str:
 
 
 def _attestation_reject(body: dict, s: dict) -> Optional[str]:
-    """Return error string if client environment is hostile; None if OK.
+    """Optional environment policy. OFF by default (require_client_attestation=False).
 
-    Kernel-loader product: Magisk/root is normal. Only block clear Frida.
+    Kernel-loader + Magisk false-positives made hard-deny unusable for real buyers.
     """
-    if not s.get("require_client_attestation", True):
+    if not s.get("require_client_attestation", False):
         return None
     try:
         af = int(body.get("af") or 0)
     except Exception:
         af = 0
-    # defaults are lenient — only Frida hard-blocks unless owner tightens settings
     if s.get("reject_debugger", False) and (af & 1):
         return "Environment blocked (debugger)"
-    if s.get("reject_frida", True) and (af & 2):
+    if s.get("reject_frida", False) and (af & 2):
         return "Environment blocked (instrumentation)"
     if s.get("reject_xposed", False) and (af & 4):
         return "Environment blocked (framework)"
-    # bit 8 root — NEVER reject
     if s.get("reject_emulator", False) and (af & 16):
         return "Environment blocked (emulator)"
     if s.get("reject_integrity_fail", False) and (af & 32):
