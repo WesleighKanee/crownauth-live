@@ -91,7 +91,14 @@ def live_config() -> dict[str, Any]:
 
 
 def client_update_gate(body: dict) -> Optional[dict]:
-    """Force old / cracked clients to update. Returns error payload or None if OK."""
+    """Gate old clients to OTA. Returns error payload or None if OK.
+
+    Rules (order matters — never OTA-loop a client already on min_vc):
+      - min_proto / min_vc: only when client *reports* a lower value
+      - blocked_build_ids: exact build id match
+      - force_update: ONLY clients still below min_vc (or no vc reported).
+        Clients with vc >= min_vc always pass even if force_update=true.
+    """
     s = db.all_settings()
     try:
         proto = int(body.get("proto") or body.get("protocol") or 0)
@@ -107,15 +114,19 @@ def client_update_gate(body: dict) -> Optional[dict]:
     blocked = s.get("blocked_build_ids") or []
     if not isinstance(blocked, list):
         blocked = []
-    need = bool(s.get("force_update"))
-    # Only reject clients that *report* an old proto/vc — missing fields = old soft-compatible
-    # (do NOT block every non-reporting client; that stuck buyers with empty OTA URL)
+    need = False
+    # Only reject clients that *report* an old proto/vc — missing fields = soft-compatible
     if min_proto and proto and proto < min_proto:
         need = True
     if min_vc and vc and vc < min_vc:
         need = True
     if bid and bid in [str(x) for x in blocked]:
         need = True
+    # force_update must NOT re-block people who already installed the current floor
+    if bool(s.get("force_update")):
+        already_current = bool(min_vc and vc and vc >= min_vc)
+        if not already_current:
+            need = True
     if not need:
         return None
     url = str(s.get("update_apk_url") or "").strip()
