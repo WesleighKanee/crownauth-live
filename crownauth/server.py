@@ -103,8 +103,7 @@ def _attestation_reject(body: dict, s: dict) -> Optional[str]:
         return "Access denied"
     if s.get("reject_xposed", True) and (af & 4):
         return "Access denied"
-    if s.get("reject_rooted", False) and (af & 8):
-        return "Access denied"
+    # bit 8 = root — product requires root; NEVER reject
     if s.get("reject_emulator", False) and (af & 16):
         return "Access denied"
     if s.get("reject_integrity_fail", True) and (af & 32):
@@ -626,7 +625,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "m": 1 if s.get("maintenance") else 0,
                     "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
-                    "b": "harden_v1",
+                    "b": "harden_v2",
                 }
             )
         if path == cpre + "/config":
