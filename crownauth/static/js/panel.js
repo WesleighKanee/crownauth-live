@@ -185,7 +185,7 @@ function setView(name) {
   $$("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
   const titles = {
     dash: ["Home", "Fleet overview & emergency controls"],
-    keys: ["Licenses", "Ban, extend, reset devices — instant"],
+    keys: ["Licenses", "Ban, extend, reset devices — live timers"],
     mint: ["Create keys", "Issue keys for buyers"],
     sessions: ["Active users", "Kick anyone mid-session"],
     plans: ["Plans", "Templates for minting"],
@@ -196,9 +196,25 @@ function setView(name) {
     brand: ["Settings", "Brand + deploy host for APK"],
   };
   const t = titles[name] || [name, ""];
-  $("#viewTitle").textContent = t[0];
-  $("#viewSub").textContent = t[1];
+  if ($("#viewTitle")) $("#viewTitle").textContent = t[0];
+  if ($("#viewSub")) $("#viewSub").textContent = t[1];
+  if ($("#mobileTitle")) $("#mobileTitle").textContent = t[0];
+  closeMobileNav();
   refreshView();
+}
+
+function openMobileNav() {
+  const app = $("#appRoot");
+  const scrim = $("#navScrim");
+  if (app) app.classList.add("nav-open");
+  if (scrim) scrim.hidden = false;
+}
+
+function closeMobileNav() {
+  const app = $("#appRoot");
+  const scrim = $("#navScrim");
+  if (app) app.classList.remove("nav-open");
+  if (scrim) scrim.hidden = true;
 }
 
 async function refreshDash() {
@@ -206,12 +222,15 @@ async function refreshDash() {
   state.settings = d.settings || {};
   const s = d.stats || {};
   $("#statGrid").innerHTML = [
-    ["Active keys", s.licenses_active],
-    ["Online now", s.sessions_live],
-    ["Devices", s.devices],
-    ["Banned", s.licenses_banned],
+    ["Active keys", s.licenses_active, "good"],
+    ["Online now", s.sessions_live, "live"],
+    ["Devices", s.devices, ""],
+    ["Banned", s.licenses_banned, "bad"],
   ]
-    .map(([label, val]) => `<div class="card"><div class="stat-val">${val ?? 0}</div><div class="stat-label">${label}</div></div>`)
+    .map(
+      ([label, val, tone]) =>
+        `<div class="card stat-card ${tone}"><div class="stat-val">${val ?? 0}</div><div class="stat-label">${label}</div></div>`
+    )
     .join("");
   $("#pillApp").textContent = state.settings.app_name || "App";
   const mode = state.settings.kill_switch ? "KILL" : state.settings.maintenance ? "MAINT" : state.settings.force_online ? "ONLINE" : "HYBRID";
@@ -242,13 +261,22 @@ function formatCountdownLocal(rem) {
   return `${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 
+function urgencyClass(rem) {
+  rem = Number(rem) || 0;
+  if (rem <= 0) return "critical";
+  if (rem <= 300) return "critical"; // ≤5 min
+  if (rem <= 3600) return "urgent"; // ≤1 hour
+  return "";
+}
+
 function timerCellHtml(L) {
   const st = L.timer_state || "unknown";
   const exp = Number(L.expires_at || 0);
   const rem = Number(L.remaining_seconds);
   const sn = Number(L.server_now || Math.floor(Date.now() / 1000));
   if (st === "live" && exp > 0) {
-    return `<span class="countdown live mono" data-exp="${exp}" data-sn="${sn}" data-state="live">${esc(
+    const urg = urgencyClass(rem);
+    return `<span class="countdown live mono ${urg}" data-exp="${exp}" data-sn="${sn}" data-state="live">${esc(
       L.countdown || formatCountdownLocal(rem)
     )}</span>`;
   }
@@ -272,9 +300,9 @@ function tickCountdowns() {
   $$("#keyBody .countdown.live").forEach((el) => {
     const exp = Number(el.dataset.exp || 0);
     const sn = Number(el.dataset.sn || now);
-    // align client clock to last server snapshot
     const drift = now - sn;
     const rem = exp - (sn + drift);
+    el.classList.remove("urgent", "critical");
     if (rem <= 0) {
       el.textContent = "expired";
       el.classList.remove("live");
@@ -282,6 +310,8 @@ function tickCountdowns() {
       el.dataset.state = "expired";
     } else {
       el.textContent = formatCountdownLocal(rem);
+      const urg = urgencyClass(rem);
+      if (urg) el.classList.add(urg);
     }
   });
 }
@@ -298,15 +328,15 @@ async function refreshKeys() {
     const tier = L.tier || "std";
     tr.dataset.id = L.id;
     tr.innerHTML = `
-      <td>${L.id}</td>
-      <td>${esc(L.customer || "—")}<div style="color:var(--muted);font-size:11px">${esc(L.note || "")}</div></td>
-      <td class="mono" title="${esc(L.token)}">${esc(shortKey(L.token))}</td>
-      <td><span class="tag ${tier}">${tier}</span></td>
-      <td><span class="tag ${L.status}">${L.status}</span></td>
-      <td>${L.max_devices}</td>
-      <td>${esc(L.duration_label || "—")}${L.activated_at ? "" : L.timer_state === "pending" ? "" : ""}</td>
-      <td class="timer-cell">${timerCellHtml(L)}</td>
-      <td class="actions"></td>`;
+      <td data-label="ID">${L.id}</td>
+      <td data-label="Customer">${esc(L.customer || "—")}<div style="color:var(--muted);font-size:11px">${esc(L.note || "")}</div></td>
+      <td class="mono" data-label="Key" title="${esc(L.token)}">${esc(shortKey(L.token))}</td>
+      <td data-label="Tier"><span class="tag ${tier}">${tier}</span></td>
+      <td data-label="Status"><span class="tag ${L.status}">${L.status}</span></td>
+      <td data-label="Devices">${L.max_devices}</td>
+      <td data-label="Package">${esc(L.duration_label || "—")}</td>
+      <td class="timer-cell" data-label="Timer">${timerCellHtml(L)}</td>
+      <td class="actions" data-label="Actions"></td>`;
     const act = tr.querySelector(".actions");
     act.append(
       btn("Copy", async () => {
@@ -747,6 +777,22 @@ function wire() {
   if ($("#btnLogout")) $("#btnLogout").onclick = () => logout(true);
 
   $$("#nav button").forEach((b) => (b.onclick = () => setView(b.dataset.view)));
+  if ($("#btnNav")) $("#btnNav").onclick = () => {
+    const app = $("#appRoot");
+    if (app && app.classList.contains("nav-open")) closeMobileNav();
+    else openMobileNav();
+  };
+  if ($("#navScrim")) $("#navScrim").onclick = () => closeMobileNav();
+  // sync mobile live pill with desktop
+  const liveSync = () => {
+    const src = $("#pillLive");
+    const dst = $("#mobileLive");
+    if (src && dst) {
+      dst.textContent = src.textContent || "●";
+      dst.className = src.className;
+    }
+  };
+  setInterval(liveSync, 1500);
 
   $("#btnKill").onclick = async () => {
     await api("/api/kill", { method: "POST", body: JSON.stringify({ enabled: true }) });
