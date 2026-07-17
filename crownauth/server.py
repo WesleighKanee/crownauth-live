@@ -929,8 +929,14 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 return self._json({"ok": False, "error": "Inactive"}, 403)
             qty = max(1, min(50, int(body.get("qty") or 1)))
             # duration limits
+            custom = (body.get("duration_custom") or body.get("duration_clock") or "").strip()
             if body.get("duration_unit") == "lifetime" or body.get("lifetime"):
                 secs = 0
+            elif custom:
+                parsed = db.parse_duration_input(custom)
+                if parsed is None:
+                    return self._json({"ok": False, "error": "Bad custom duration (e.g. 30:00, 1h, 2d)"}, 400)
+                secs = int(parsed)
             elif body.get("duration_value") is not None:
                 secs = db.duration_to_seconds(body.get("duration_value"), body.get("duration_unit") or "days")
             else:
@@ -1045,9 +1051,18 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                         plan = None
                 qty = max(1, min(500, int(body.get("qty") or 1)))
 
-                # duration: prefer value+unit, then seconds, then plan, then days legacy
+                # duration: custom clock (30:00 / 1:30:00), value+unit, seconds, plan, days
+                custom = (body.get("duration_custom") or body.get("duration_clock") or body.get("custom_duration") or "").strip()
                 if body.get("duration_unit") == "lifetime" or body.get("lifetime"):
                     secs = 0
+                elif custom:
+                    parsed = db.parse_duration_input(custom)
+                    if parsed is None:
+                        return self._json(
+                            {"ok": False, "error": "Bad custom duration. Use 30:00 (30 min), 1:30:00, 45m, 2h, 1d"},
+                            400,
+                        )
+                    secs = int(parsed)
                 elif body.get("duration_seconds") is not None and str(body.get("duration_seconds")) != "":
                     secs = int(body.get("duration_seconds") or 0)
                 elif body.get("duration_value") is not None and body.get("duration_unit"):
@@ -1181,6 +1196,10 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 return self._json({"ok": True})
             if path == "/api/licenses/extend":
                 secs = int(body.get("seconds") or 0)
+                custom = (body.get("duration_custom") or body.get("duration_clock") or "").strip()
+                if not secs and custom:
+                    parsed = db.parse_duration_input(custom)
+                    secs = int(parsed or 0)
                 if not secs and body.get("duration_value") is not None:
                     secs = db.duration_to_seconds(body.get("duration_value"), body.get("duration_unit") or "days")
                 if not secs:

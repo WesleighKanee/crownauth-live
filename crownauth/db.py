@@ -275,6 +275,11 @@ def init_db() -> None:
 
 def duration_to_seconds(value: Any, unit: str = "days") -> int:
     """Convert UI amount + unit → seconds. unit: minutes|hours|days|weeks|months|lifetime."""
+    # Allow clock strings in value: "30:00" (30 min), "1:30:00" (1h30m), "90" + minutes
+    if isinstance(value, str) and (":" in value or value.strip().lower().endswith(("m", "h", "d", "w", "s"))):
+        parsed = parse_duration_input(value)
+        if parsed is not None:
+            return parsed
     u = (unit or "days").lower().strip()
     if u in ("lifetime", "life", "forever", "0"):
         return 0
@@ -285,10 +290,15 @@ def duration_to_seconds(value: Any, unit: str = "days") -> int:
     if v <= 0:
         return 0
     mult = {
+        "second": 1,
+        "seconds": 1,
+        "sec": 1,
+        "s": 1,
         "minute": 60,
         "minutes": 60,
         "min": 60,
         "mins": 60,
+        "m": 60,
         "hour": 3600,
         "hours": 3600,
         "hr": 3600,
@@ -307,16 +317,74 @@ def duration_to_seconds(value: Any, unit: str = "days") -> int:
     return int(v * mult)
 
 
+def parse_duration_input(raw: Any) -> Optional[int]:
+    """Parse flexible duration strings to seconds.
+
+    Examples:
+      30:00      → 30 minutes
+      1:30       → 1 hour 30 minutes
+      1:30:00    → 1 hour 30 minutes
+      90         → None (caller uses unit)
+      30m / 2h / 1d / 45s
+      lifetime / 0
+    Returns None if not a recognized custom form (so unit path can handle plain numbers).
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip().lower().replace(" ", "")
+    if not s:
+        return None
+    if s in ("lifetime", "life", "forever", "unlimited", "0", "inf"):
+        return 0
+    # 30m, 2h, 1d, 45s, 1w
+    import re
+
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)(s|sec|secs|seconds|m|min|mins|minutes|h|hr|hrs|hours|d|day|days|w|week|weeks)", s)
+    if m:
+        return duration_to_seconds(m.group(1), m.group(2))
+    # Clock: MM:SS or HH:MM or HH:MM:SS
+    if ":" in s:
+        parts = s.split(":")
+        try:
+            nums = [int(p) for p in parts]
+        except Exception:
+            return None
+        if any(n < 0 for n in nums):
+            return None
+        if len(nums) == 2:
+            # User intent: "30:00" = 30 minutes (MM:SS style for short keys)
+            # If first part >= 24 and second < 60, still treat as MM:SS
+            a, b = nums
+            if b >= 60:
+                return None
+            # MM:SS when a is minutes-like (common seller case 30:00, 05:30)
+            # HH:MM when a < 24 and we want hours — use rule:
+            #   if b looks like seconds (always) and a can be minutes: prefer MM:SS for a<=999
+            # Seller asked specifically for 30:00 = 30 minutes → always MM:SS for 2-part
+            return a * 60 + b
+        if len(nums) == 3:
+            h, m_, sec = nums
+            if m_ >= 60 or sec >= 60:
+                return None
+            return h * 3600 + m_ * 60 + sec
+        return None
+    return None
+
+
 def format_duration(seconds: int) -> str:
     s = int(seconds or 0)
     if s <= 0:
         return "Lifetime"
+    if s < 60:
+        return f"{s}s"
     if s < 3600:
-        m = max(1, s // 60)
-        return f"{m} min"
+        m = s // 60
+        r = s % 60
+        return f"{m} min" if r == 0 else f"{m}m {r}s"
     if s < 86400:
-        h = s / 3600
-        return f"{int(h)}h" if h == int(h) else f"{h:.1f}h"
+        h = s // 3600
+        m = (s % 3600) // 60
+        return f"{h}h" if m == 0 else f"{h}h {m}m"
     d = s / 86400
     if d < 7:
         return f"{int(d)}d" if d == int(d) else f"{d:.1f}d"
@@ -325,6 +393,17 @@ def format_duration(seconds: int) -> str:
         return f"{int(w)}w" if w == int(w) else f"{w:.1f}w"
     mo = d / 30
     return f"{int(mo)}mo" if mo == int(mo) else f"{mo:.1f}mo"
+
+
+def format_countdown(remaining: int) -> str:
+    """HH:MM:SS or Dd HH:MM:SS for license timers."""
+    s = max(0, int(remaining or 0))
+    days, s = divmod(s, 86400)
+    h, s = divmod(s, 3600)
+    m, sec = divmod(s, 60)
+    if days > 0:
+        return f"{days}d {h:02d}:{m:02d}:{sec:02d}"
+    return f"{h:02d}:{m:02d}:{sec:02d}"
 
 
 def license_duration_seconds(lic: dict) -> int:
@@ -552,14 +631,48 @@ def list_licenses(status: Optional[str] = None, q: str = "", limit: int = 500) -
     sql += f" ORDER BY id DESC LIMIT {lim}"
     rows = con.execute(sql, args).fetchall()
     con.close()
-    out = []
-    for r in rows:
-        d = dict(r)
-        sec = license_duration_seconds(d)
-        d["duration_seconds"] = sec
-        d["duration_label"] = d.get("duration_label") or format_duration(sec)
-        out.append(d)
-    return out
+    now = int(time.time())
+    return [enrich_license_row(dict(r), now) for r in rows]
+
+
+def enrich_license_row(d: dict, now: Optional[int] = None) -> dict:
+    """Attach duration + live countdown fields for panel timers."""
+    now = int(now if now is not None else time.time())
+    sec = license_duration_seconds(d)
+    d["duration_seconds"] = sec
+    d["duration_label"] = d.get("duration_label") or format_duration(sec)
+    d["server_now"] = now
+    act = int(d.get("activated_at") or 0)
+    exp = int(d.get("expires_at") or 0)
+    st = str(d.get("status") or "")
+    if st == "banned":
+        d["timer_state"] = "banned"
+        d["remaining_seconds"] = 0
+        d["countdown"] = "banned"
+    elif st == "expired" or (exp > 0 and now > exp):
+        d["timer_state"] = "expired"
+        d["remaining_seconds"] = 0
+        d["countdown"] = "expired"
+        if st != "expired":
+            d["status"] = "expired"
+    elif sec <= 0 and exp <= 0:
+        d["timer_state"] = "lifetime"
+        d["remaining_seconds"] = -1
+        d["countdown"] = "lifetime"
+    elif act <= 0 and exp <= 0:
+        d["timer_state"] = "pending"
+        d["remaining_seconds"] = sec
+        d["countdown"] = f"first use · {format_duration(sec)}"
+    elif exp > 0:
+        rem = max(0, exp - now)
+        d["timer_state"] = "live"
+        d["remaining_seconds"] = rem
+        d["countdown"] = format_countdown(rem)
+    else:
+        d["timer_state"] = "unknown"
+        d["remaining_seconds"] = 0
+        d["countdown"] = "—"
+    return d
 
 
 def licenses_csv(status: Optional[str] = None, q: str = "") -> str:
@@ -991,11 +1104,5 @@ def list_licenses_for_reseller(name: str) -> list[dict]:
         (name,),
     ).fetchall()
     con.close()
-    out = []
-    for r in rows:
-        d = dict(r)
-        sec = license_duration_seconds(d)
-        d["duration_seconds"] = sec
-        d["duration_label"] = d.get("duration_label") or format_duration(sec)
-        out.append(d)
-    return out
+    now = int(time.time())
+    return [enrich_license_row(dict(r), now) for r in rows]

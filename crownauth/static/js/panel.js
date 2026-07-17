@@ -229,6 +229,63 @@ async function refreshDash() {
   ].join("<br/>");
 }
 
+function formatCountdownLocal(rem) {
+  rem = Math.max(0, Math.floor(Number(rem) || 0));
+  const d = Math.floor(rem / 86400);
+  rem %= 86400;
+  const h = Math.floor(rem / 3600);
+  rem %= 3600;
+  const m = Math.floor(rem / 60);
+  const s = rem % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  if (d > 0) return `${d}d ${pad(h)}:${pad(m)}:${pad(s)}`;
+  return `${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+
+function timerCellHtml(L) {
+  const st = L.timer_state || "unknown";
+  const exp = Number(L.expires_at || 0);
+  const rem = Number(L.remaining_seconds);
+  const sn = Number(L.server_now || Math.floor(Date.now() / 1000));
+  if (st === "live" && exp > 0) {
+    return `<span class="countdown live mono" data-exp="${exp}" data-sn="${sn}" data-state="live">${esc(
+      L.countdown || formatCountdownLocal(rem)
+    )}</span>`;
+  }
+  if (st === "pending") {
+    return `<span class="countdown pending" data-state="pending">${esc(L.countdown || "first use")}</span>`;
+  }
+  if (st === "lifetime") {
+    return `<span class="countdown life" data-state="lifetime">lifetime</span>`;
+  }
+  if (st === "expired") {
+    return `<span class="countdown expired" data-state="expired">expired</span>`;
+  }
+  if (st === "banned") {
+    return `<span class="countdown banned" data-state="banned">banned</span>`;
+  }
+  return `<span class="countdown">${esc(L.countdown || "—")}</span>`;
+}
+
+function tickCountdowns() {
+  const now = Math.floor(Date.now() / 1000);
+  $$("#keyBody .countdown.live").forEach((el) => {
+    const exp = Number(el.dataset.exp || 0);
+    const sn = Number(el.dataset.sn || now);
+    // align client clock to last server snapshot
+    const drift = now - sn;
+    const rem = exp - (sn + drift);
+    if (rem <= 0) {
+      el.textContent = "expired";
+      el.classList.remove("live");
+      el.classList.add("expired");
+      el.dataset.state = "expired";
+    } else {
+      el.textContent = formatCountdownLocal(rem);
+    }
+  });
+}
+
 async function refreshKeys() {
   const q = encodeURIComponent($("#keySearch").value || "");
   const st = encodeURIComponent($("#keyStatus").value || "");
@@ -239,6 +296,7 @@ async function refreshKeys() {
   for (const L of state.licenses) {
     const tr = document.createElement("tr");
     const tier = L.tier || "std";
+    tr.dataset.id = L.id;
     tr.innerHTML = `
       <td>${L.id}</td>
       <td>${esc(L.customer || "—")}<div style="color:var(--muted);font-size:11px">${esc(L.note || "")}</div></td>
@@ -246,7 +304,8 @@ async function refreshKeys() {
       <td><span class="tag ${tier}">${tier}</span></td>
       <td><span class="tag ${L.status}">${L.status}</span></td>
       <td>${L.max_devices}</td>
-      <td>${L.expires_at ? fmtTime(L.expires_at) : (L.duration_label || (L.duration_seconds > 0 ? L.duration_seconds + "s" : L.duration_days > 0 ? L.duration_days + "d" : "lifetime")) + (L.activated_at ? "" : " · first use")}</td>
+      <td>${esc(L.duration_label || "—")}${L.activated_at ? "" : L.timer_state === "pending" ? "" : ""}</td>
+      <td class="timer-cell">${timerCellHtml(L)}</td>
       <td class="actions"></td>`;
     const act = tr.querySelector(".actions");
     act.append(
@@ -263,6 +322,11 @@ async function refreshKeys() {
         toast("Updated");
         refreshKeys();
       }, L.status !== "banned"),
+      btn("+30m", async () => {
+        await api("/api/licenses/extend", { method: "POST", body: JSON.stringify({ id: L.id, duration_custom: "30:00" }) });
+        toast("+30 min");
+        refreshKeys();
+      }),
       btn("+1h", async () => {
         await api("/api/licenses/extend", { method: "POST", body: JSON.stringify({ id: L.id, duration_value: 1, duration_unit: "hours" }) });
         toast("+1 hour");
@@ -290,6 +354,7 @@ async function refreshKeys() {
     );
     body.appendChild(tr);
   }
+  tickCountdowns();
 }
 
 function btn(label, fn, danger = false) {
@@ -405,11 +470,48 @@ function applyPlanToMint() {
   updateMintPreview();
 }
 
+function parseCustomDurationClient(raw) {
+  if (!raw) return null;
+  let s = String(raw).trim().toLowerCase().replace(/\s+/g, "");
+  if (!s) return null;
+  if (["lifetime", "life", "forever", "0", "unlimited"].includes(s)) return 0;
+  const suf = s.match(/^(\d+(?:\.\d+)?)(s|sec|m|min|mins|h|hr|hrs|d|day|days|w|week|weeks)$/);
+  if (suf) {
+    const n = parseFloat(suf[1]);
+    const u = suf[2];
+    if (u.startsWith("s")) return Math.round(n);
+    if (u.startsWith("m") && !u.startsWith("mo")) return Math.round(n * 60);
+    if (u.startsWith("h")) return Math.round(n * 3600);
+    if (u.startsWith("d")) return Math.round(n * 86400);
+    if (u.startsWith("w")) return Math.round(n * 7 * 86400);
+  }
+  if (s.includes(":")) {
+    const parts = s.split(":").map((x) => parseInt(x, 10));
+    if (parts.some((x) => Number.isNaN(x) || x < 0)) return null;
+    if (parts.length === 2) {
+      // MM:SS  e.g. 30:00 = 30 minutes
+      const [a, b] = parts;
+      if (b >= 60) return null;
+      return a * 60 + b;
+    }
+    if (parts.length === 3) {
+      const [h, m, sec] = parts;
+      if (m >= 60 || sec >= 60) return null;
+      return h * 3600 + m * 60 + sec;
+    }
+  }
+  return null;
+}
+
 function updateMintPreview() {
+  const custom = ($("#mintCustom") && $("#mintCustom").value.trim()) || "";
   const unit = $("#mintDurUnit").value;
   const val = Number($("#mintDurVal").value || 0);
   let label = "Lifetime";
-  if (unit !== "lifetime" && val > 0) {
+  if (custom) {
+    const sec = parseCustomDurationClient(custom);
+    label = sec === null ? `invalid (${custom})` : sec === 0 ? "Lifetime" : humanDur(sec) + ` [${custom}]`;
+  } else if (unit !== "lifetime" && val > 0) {
     label = val + " " + unit;
   }
   const tier = $("#mintTier").value;
@@ -687,7 +789,7 @@ function wire() {
     $("#mintDurUnit").value = unit;
     updateMintPreview();
   };
-  ["mintDurVal", "mintDurUnit", "mintTier", "mintDevs", "mintStart", "mintQty"].forEach((id) => {
+  ["mintDurVal", "mintDurUnit", "mintTier", "mintDevs", "mintStart", "mintQty", "mintCustom"].forEach((id) => {
     const el = $("#" + id);
     if (el) el.addEventListener("input", updateMintPreview);
     if (el) el.addEventListener("change", updateMintPreview);
@@ -697,6 +799,11 @@ function wire() {
     try {
       const planVal = $("#mintPlan").value;
       const qty = Math.max(1, Math.min(500, Number($("#mintQty").value || 1)));
+      const custom = ($("#mintCustom") && $("#mintCustom").value.trim()) || "";
+      if (custom) {
+        const sec = parseCustomDurationClient(custom);
+        if (sec === null) return toast("Bad custom time. Try 30:00 or 1:30:00 or 45m", true);
+      }
       const body = {
         plan_id: planVal && planVal !== "custom" && planVal !== "" ? planVal : null,
         customer: $("#mintCustomer").value,
@@ -713,7 +820,11 @@ function wire() {
         key_prefix: ($("#mintPrefix") && $("#mintPrefix").value) || "WC",
         key_length: Number(($("#mintKeyLen") && $("#mintKeyLen").value) || 10),
       };
-      if (body.duration_unit === "lifetime") {
+      if (custom) {
+        body.duration_custom = custom;
+        delete body.duration_value;
+        delete body.duration_unit;
+      } else if (body.duration_unit === "lifetime") {
         body.lifetime = true;
         body.duration_value = 0;
       }
@@ -906,11 +1017,18 @@ function wire() {
   }
 }
 
+// Live panel: poll server every 3s on dash/keys/sessions (loader heartbeats independently)
 setInterval(() => {
   if (document.hidden || !state.authed) return;
-  if (["dash", "sessions", "security"].includes(state.view)) refreshView();
+  if (["dash", "keys", "sessions", "security"].includes(state.view)) refreshView();
   else refreshDash().catch(() => {});
 }, 3000);
+
+// Smooth countdown every second without full table rebuild
+setInterval(() => {
+  if (document.hidden || !state.authed) return;
+  if (state.view === "keys") tickCountdowns();
+}, 1000);
 
 wire();
 trySession();

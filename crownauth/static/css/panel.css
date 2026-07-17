@@ -499,3 +499,12 @@ td.mono, .mono { font-family: var(--mono); font-size: 12px; }
   .main { padding: 18px 14px 40px; }
   .grid.stats, .grid.two { grid-template-columns: 1fr; }
 }
+
+/* Live license timers */
+.countdown { font-variant-numeric: tabular-nums; font-weight: 600; }
+.countdown.live { color: var(--good, #3dd68c); }
+.countdown.pending { color: var(--accent, #8b9cff); }
+.countdown.expired, .countdown.banned { color: var(--bad, #f31260); }
+.countdown.life { color: var(--muted, #8b93a7); }
+.timer-cell { min-width: 110px; }
+code { font-size: 12px; background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 4px; }

@@ -132,7 +132,7 @@
             <table>
               <thead>
                 <tr>
-                  <th>ID</th><th>Customer</th><th>Key</th><th>Tier</th><th>Status</th><th>Devices</th><th>Expires</th><th>Actions</th>
+                  <th>ID</th><th>Customer</th><th>Key</th><th>Tier</th><th>Status</th><th>Devices</th><th>Package</th><th>Timer</th><th>Actions</th>
                 </tr>
               </thead>
               <tbody id="keyBody"></tbody>
@@ -152,11 +152,11 @@
                 <div class="row" style="gap:8px">
                   <input id="mintDurVal" type="number" value="1" min="0" style="flex:1" />
                   <select id="mintDurUnit" style="flex:1.2">
+                    <option value="minutes">Minutes</option>
                     <option value="hours">Hours</option>
                     <option value="days" selected>Days</option>
                     <option value="weeks">Weeks</option>
                     <option value="months">Months</option>
-                    <option value="minutes">Minutes</option>
                     <option value="lifetime">Lifetime</option>
                   </select>
                 </div>
@@ -164,6 +164,16 @@
               <div class="field">
                 <label>How many (bulk max 500)</label>
                 <input id="mintQty" type="number" value="1" min="1" max="500" />
+              </div>
+            </div>
+
+            <div class="row" style="margin-top:10px">
+              <div class="field" style="flex:1.6">
+                <label>Custom time (optional — overrides Length above)</label>
+                <input id="mintCustom" placeholder="30:00 = 30 min · 1:30:00 = 1h30m · 45m · 2h · 1d" autocomplete="off" />
+                <div style="margin-top:6px;color:var(--muted);font-size:12px">
+                  Examples: <code>30:00</code> = 30 minutes · <code>1:30:00</code> = 1h 30m · <code>90m</code> · leave empty to use Length
+                </div>
               </div>
             </div>
 
