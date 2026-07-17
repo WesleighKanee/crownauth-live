@@ -120,7 +120,7 @@ def client_update_gate(body: dict) -> Optional[dict]:
         return None
     url = str(s.get("update_apk_url") or "").strip()
     if not url:
-        url = "https://github.com/WesleighKanee/crownauth-live/releases/latest/download/WhiteCrownsLoaderV2.apk"
+        url = "https://crownauth-live.onrender.com/v2/apk"
     msg = str(
         s.get("update_message")
         or "A new update is available — tap OK / allow install. Or open the download link."
@@ -456,6 +456,38 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _stream_ota_apk(self) -> None:
+        """Proxy APK so the client URL never shows the private GitHub username."""
+        import urllib.request
+
+        s = db.all_settings()
+        upstream = str(
+            s.get("update_apk_upstream")
+            or "https://github.com/WesleighKanee/crownauth-live/releases/latest/download/WhiteCrownsLoaderV2.apk"
+        ).strip()
+        try:
+            req = urllib.request.Request(
+                upstream,
+                headers={"User-Agent": "CrownAuth-OTA-Proxy/3", "Accept": "*/*"},
+            )
+            with urllib.request.urlopen(req, timeout=180) as r:
+                data = r.read()
+                ctype = r.headers.get("Content-Type") or "application/vnd.android.package-archive"
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header(
+                "Content-Disposition",
+                'attachment; filename="WhiteCrownsLoaderV2.apk"',
+            )
+            self.send_header("Cache-Control", "public, max-age=300")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            msg = f"OTA unavailable: {e}".encode("utf-8")
+            self._send(502, msg, "text/plain; charset=utf-8")
+
     def _read_json(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n) if n else b"{}"
@@ -694,6 +726,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
             )
         if path == cpre + "/version":
             s = db.all_settings()
+            pub_url = str(s.get("update_apk_url") or "").strip() or "https://crownauth-live.onrender.com/v2/apk"
             return self._json(
                 {
                     "ok": True,
@@ -701,11 +734,14 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "min_proto": int(s.get("min_client_protocol") or 3),
                     "min_vc": int(s.get("min_client_version_code") or 1),
                     "force_update": bool(s.get("force_update")),
-                    "url": s.get("update_apk_url") or "",
+                    "url": pub_url,
                     "message": s.get("update_message") or "",
                     "blocked": s.get("blocked_build_ids") or [],
                 }
             )
+        # Anonymous OTA download — buyers only see onrender, not GitHub username
+        if path in (cpre + "/apk", cpre + "/download/apk", "/ota/WhiteCrownsLoaderV2.apk"):
+            return self._stream_ota_apk()
         if path == cpre + "/config":
             out: dict[str, Any] = {"ok": True, "config": signed_live_config()}
             if db.get_setting("expose_plain_config"):

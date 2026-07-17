@@ -100,7 +100,9 @@ DEFAULT_SETTINGS = {
     "min_client_protocol": 3,
     "min_client_version_code": 1,
     "force_update": False,
-    "update_apk_url": "https://github.com/WesleighKanee/crownauth-live/releases/latest/download/WhiteCrownsLoaderV2.apk",
+    # Public URL buyers see (no personal GitHub username). Server proxies from upstream.
+    "update_apk_url": "https://crownauth-live.onrender.com/v2/apk",
+    "update_apk_upstream": "https://github.com/WesleighKanee/crownauth-live/releases/latest/download/WhiteCrownsLoaderV2.apk",
     "update_message": "A new update is available — install will open. Allow install, then reopen.",
     "blocked_build_ids": [],  # e.g. ["harden_v1","cracked_build"]
 }
