@@ -156,6 +156,15 @@ def backup_now(force: bool = False, notify: bool = True) -> tuple[bool, str]:
             except Exception:
                 pass
         return False, msg
+    # Never overwrite a good remote backup with an empty license DB (free-tier wipe trap)
+    try:
+        from crownauth import db as _db
+
+        n_lic = int(_db.stats().get("licenses_total") or 0)
+        if n_lic == 0 and not force:
+            return False, "refused empty backup (0 licenses) — mint keys or force=True"
+    except Exception:
+        pass
     now = time.time()
     with _lock:
         if not force and (now - _last_backup) < _MIN_BACKUP_GAP:
@@ -229,11 +238,21 @@ def restore_if_needed() -> tuple[bool, str]:
     # restore if no db or tiny
     need = (not db_path.exists()) or db_path.stat().st_size < 2000
     if not need:
-        # also restore if secrets missing private key
         from crownauth import crypto_v2 as c
 
-        if c.PRIV_PATH.exists():
-            return False, "local data present"
+        if not c.PRIV_PATH.exists():
+            need = True
+        else:
+            # free-tier trap: empty schema DB after wipe (plans exist, 0 licenses)
+            try:
+                db.init_db()
+                n = int(db.stats().get("licenses_total") or 0)
+                if n == 0:
+                    need = True  # pull last backup (may have keys)
+            except Exception:
+                pass
+            if not need:
+                return False, "local data present"
     try:
         api = f"https://api.github.com/repos/{repo}/contents/crownauth-backup.tar.gz.b64"
         headers = {
