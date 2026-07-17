@@ -187,7 +187,7 @@ function setView(name) {
     dash: ["Home", "Fleet overview & emergency controls"],
     keys: ["Licenses", "Ban, extend, reset devices — live timers"],
     mint: ["Create keys", "Issue keys for buyers"],
-    sessions: ["Active users", "Kick anyone mid-session"],
+    sessions: ["Online now", "Live sessions (also shown on Licenses)"],
     plans: ["Plans", "Templates for minting"],
     security: ["Live controls", "Policy that applies without rebuild"],
     blacklist: ["Blocks", "Device / IP deny list"],
@@ -327,10 +327,17 @@ async function refreshKeys() {
     const tr = document.createElement("tr");
     const tier = L.tier || "std";
     tr.dataset.id = L.id;
+    const online = !!L.online;
+    const onlineHtml = online
+      ? `<span class="tag online" title="IP ${esc(L.online_ip || "")} · device ${esc(L.online_hwid || "")}">● online${
+          L.online_count > 1 ? " ×" + L.online_count : ""
+        }</span><div style="color:var(--muted);font-size:10px;margin-top:4px">${esc(L.online_ip || "")}</div>`
+      : `<span class="tag offline">offline</span>`;
     tr.innerHTML = `
       <td data-label="ID">${L.id}</td>
       <td data-label="Customer">${esc(L.customer || "—")}<div style="color:var(--muted);font-size:11px">${esc(L.note || "")}</div></td>
       <td class="mono" data-label="Key" title="${esc(L.token)}">${esc(shortKey(L.token))}</td>
+      <td data-label="Online">${onlineHtml}</td>
       <td data-label="Tier"><span class="tag ${tier}">${tier}</span></td>
       <td data-label="Status"><span class="tag ${L.status}">${L.status}</span></td>
       <td data-label="Devices">${L.max_devices}</td>
@@ -342,7 +349,18 @@ async function refreshKeys() {
       btn("Copy", async () => {
         await navigator.clipboard.writeText(L.token);
         toast("Copied");
-      }),
+      })
+    );
+    if (online && L.online_jti) {
+      act.append(
+        btn("Kick", async () => {
+          await api("/api/sessions/kick", { method: "POST", body: JSON.stringify({ jti: L.online_jti }) });
+          toast("Kicked session");
+          refreshKeys();
+        }, true)
+      );
+    }
+    act.append(
       btn(L.status === "banned" ? "Unban" : "Ban", async () => {
         if (L.status === "banned") await api("/api/licenses/unban", { method: "POST", body: JSON.stringify({ id: L.id }) });
         else {

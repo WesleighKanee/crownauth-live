@@ -761,3 +761,24 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .stat-card.good { box-shadow: inset 0 0 0 1px rgba(52,211,153,.15), var(--shadow); }
 .stat-card.live { box-shadow: inset 0 0 0 1px rgba(103,232,249,.18), var(--shadow); }
 .stat-card.bad { box-shadow: inset 0 0 0 1px rgba(251,113,133,.2), var(--shadow); }
+
+
+/* Hide merged Active users tab (still reachable if needed) */
+.nav button.nav-hidden { display: none !important; }
+
+.tag.online {
+  color: var(--good);
+  background: var(--good-dim);
+  border-color: rgba(52, 211, 153, 0.35);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}
+.tag.offline {
+  color: var(--faint);
+  background: rgba(255,255,255,0.03);
+  border-color: var(--line);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}

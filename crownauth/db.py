@@ -632,10 +632,11 @@ def list_licenses(status: Optional[str] = None, q: str = "", limit: int = 500) -
     rows = con.execute(sql, args).fetchall()
     con.close()
     now = int(time.time())
-    return [enrich_license_row(dict(r), now) for r in rows]
+    online_map = active_sessions_by_license()
+    return [enrich_license_row(dict(r), now, online_map) for r in rows]
 
 
-def enrich_license_row(d: dict, now: Optional[int] = None) -> dict:
+def enrich_license_row(d: dict, now: Optional[int] = None, online_map: Optional[dict] = None) -> dict:
     """Attach duration + live countdown fields for panel timers."""
     now = int(now if now is not None else time.time())
     sec = license_duration_seconds(d)
@@ -672,6 +673,25 @@ def enrich_license_row(d: dict, now: Optional[int] = None) -> dict:
         d["timer_state"] = "unknown"
         d["remaining_seconds"] = 0
         d["countdown"] = "—"
+    # Online presence (merged Active users → Licenses)
+    lid = int(d.get("id") or 0)
+    sessions = []
+    if online_map is not None:
+        sessions = online_map.get(lid) or []
+    d["online"] = len(sessions) > 0
+    d["online_count"] = len(sessions)
+    if sessions:
+        # newest first already
+        top = sessions[0]
+        d["online_ip"] = top.get("ip") or ""
+        d["online_hwid"] = (top.get("hwid_hash") or "")[:12]
+        d["online_jti"] = top.get("jti") or ""
+        d["online_session_exp"] = int(top.get("expires_at") or 0)
+    else:
+        d["online_ip"] = ""
+        d["online_hwid"] = ""
+        d["online_jti"] = ""
+        d["online_session_exp"] = 0
     return d
 
 
@@ -826,6 +846,17 @@ def save_session(
     ip: str = "",
 ) -> None:
     con = connect()
+    # One live session per license+device — stop Active users clutter on re-login
+    con.execute(
+        """UPDATE sessions SET revoked=1
+           WHERE license_id=? AND hwid_hash=? AND revoked=0 AND jti!=?""",
+        (license_id, hwid_hash, jti),
+    )
+    # Also drop expired ghosts for this license
+    con.execute(
+        "UPDATE sessions SET revoked=1 WHERE license_id=? AND expires_at<=? AND revoked=0",
+        (license_id, int(time.time())),
+    )
     con.execute(
         """INSERT INTO sessions(license_id, jti, hwid_hash, token, issued_at, expires_at, ip)
            VALUES(?,?,?,?,?,?,?)""",
@@ -850,23 +881,44 @@ def is_session_revoked(jti: str) -> bool:
 
 
 def list_sessions(active_only: bool = True) -> list[dict]:
+    """Latest live session per license+device only (no ghost stack from re-logins)."""
     now = int(time.time())
     con = connect()
     if active_only:
+        # keep only newest non-revoked unexpired session per (license_id, hwid_hash)
         rows = con.execute(
-            """SELECT s.*, l.customer, l.token FROM sessions s
-               JOIN licenses l ON l.id=s.license_id
-               WHERE s.revoked=0 AND s.expires_at>? ORDER BY s.id DESC LIMIT 200""",
+            """
+            SELECT s.*, l.customer, l.token, l.tier, l.status AS license_status
+            FROM sessions s
+            JOIN licenses l ON l.id = s.license_id
+            INNER JOIN (
+                SELECT license_id, hwid_hash, MAX(id) AS max_id
+                FROM sessions
+                WHERE revoked=0 AND expires_at>?
+                GROUP BY license_id, hwid_hash
+            ) latest ON s.id = latest.max_id
+            ORDER BY s.id DESC
+            LIMIT 200
+            """,
             (now,),
         ).fetchall()
     else:
         rows = con.execute(
-            """SELECT s.*, l.customer, l.token FROM sessions s
+            """SELECT s.*, l.customer, l.token, l.tier, l.status AS license_status FROM sessions s
                JOIN licenses l ON l.id=s.license_id
                ORDER BY s.id DESC LIMIT 200"""
         ).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+def active_sessions_by_license() -> dict[int, list[dict]]:
+    """Map license_id -> list of live unique device sessions (for Licenses merge)."""
+    out: dict[int, list[dict]] = {}
+    for s in list_sessions(True):
+        lid = int(s.get("license_id") or 0)
+        out.setdefault(lid, []).append(s)
+    return out
 
 
 def kick_all_sessions() -> int:
@@ -973,8 +1025,14 @@ def stats() -> dict[str, Any]:
             "SELECT COUNT(*) FROM licenses WHERE status='active' AND expires_at>0 AND expires_at<?",
             now,
         ),
+        # unique online devices, not stacked re-login rows
         "sessions_live": c(
-            "SELECT COUNT(*) FROM sessions WHERE revoked=0 AND expires_at>?", now
+            """SELECT COUNT(*) FROM (
+                 SELECT license_id, hwid_hash FROM sessions
+                 WHERE revoked=0 AND expires_at>?
+                 GROUP BY license_id, hwid_hash
+               )""",
+            now,
         ),
         "devices": c("SELECT COUNT(*) FROM devices"),
         "blacklist": c("SELECT COUNT(*) FROM blacklist"),
