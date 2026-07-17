@@ -76,6 +76,17 @@ DEFAULT_SETTINGS = {
     "panel_password_enabled": False,
     "key_prefix": "WC",
     "key_length": 10,
+    # Extreme harden — client attestation (af bitfield)
+    # bits: 1=debug 2=frida 4=xposed 8=root 16=emu 32=integrity 64=timing
+    "require_client_attestation": True,
+    "reject_frida": True,
+    "reject_xposed": True,
+    "reject_debugger": True,
+    "reject_integrity_fail": True,
+    "reject_rooted": False,  # many buyers root; flag only unless you turn this on
+    "reject_emulator": False,
+    "expected_app_build": "harden_v1",
+    "strict_build_id": False,  # set True after all clients on harden APK
 }
 
 

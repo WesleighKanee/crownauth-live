@@ -88,12 +88,44 @@ def signed_live_config() -> str:
     return sign_config_blob(PRIV, live_config())
 
 
+def _attestation_reject(body: dict, s: dict) -> Optional[str]:
+    """Return error string if client environment is hostile; None if OK."""
+    if not s.get("require_client_attestation", True):
+        return None
+    try:
+        af = int(body.get("af") or 0)
+    except Exception:
+        af = 0
+    # bitfield from Shield.java
+    if s.get("reject_debugger", True) and (af & 1):
+        return "Access denied"
+    if s.get("reject_frida", True) and (af & 2):
+        return "Access denied"
+    if s.get("reject_xposed", True) and (af & 4):
+        return "Access denied"
+    if s.get("reject_rooted", False) and (af & 8):
+        return "Access denied"
+    if s.get("reject_emulator", False) and (af & 16):
+        return "Access denied"
+    if s.get("reject_integrity_fail", True) and (af & 32):
+        return "Access denied"
+    bid = str(body.get("bid") or "").strip()
+    expect = str(s.get("expected_app_build") or "").strip()
+    if s.get("strict_build_id") and expect and bid and bid != expect:
+        return "Access denied"
+    return None
+
+
 def client_auth(body: dict, ip: str) -> dict:
     s = db.all_settings()
     if s.get("kill_switch"):
         return client_err(s.get("kill_message") or "Unavailable")
     if s.get("maintenance"):
         return client_err(s.get("maintenance_message") or "Unavailable")
+
+    att_err = _attestation_reject(body, s)
+    if att_err:
+        return client_err(att_err)
 
     token = normalize_token(body.get("key") or body.get("token") or "")
     hwid = (body.get("hwid") or "").strip()
@@ -267,6 +299,10 @@ def client_heartbeat(body: dict, ip: str) -> dict:
         return {"ok": False, "error": "Access denied", "action": "kill"}
     if s.get("maintenance"):
         return {"ok": False, "error": "Access denied", "action": "pause"}
+
+    att_err = _attestation_reject(body, s)
+    if att_err:
+        return {"ok": False, "error": "Access denied", "action": "kill"}
 
     session = body.get("session") or ""
     hwid = (body.get("hwid") or "").strip()
@@ -590,7 +626,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "m": 1 if s.get("maintenance") else 0,
                     "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
-                    "b": "launch_pack_v2",
+                    "b": "harden_v1",
                 }
             )
         if path == cpre + "/config":
