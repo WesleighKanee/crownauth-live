@@ -977,57 +977,19 @@ def rate_clear_all() -> int:
 
 
 def rate_check(key: str, max_fails: int, ban_sec: int) -> tuple[bool, str]:
-    # Master off-switch — buyers must never get stuck behind our test spam / free-tier noise
-    try:
-        if not bool(all_settings().get("rate_limit_enabled", False)):
-            return True, "ok"
-    except Exception:
-        return True, "ok"
-    if int(max_fails or 0) <= 0:
-        return True, "ok"
-    now = int(time.time())
-    con = connect()
-    row = con.execute("SELECT * FROM rate_limit WHERE key=?", (key,)).fetchone()
-    if row and int(row["blocked_until"]) > now:
-        con.close()
-        return False, "Temporarily blocked — try later"
-    if not row or now - int(row["window_start"]) > 3600:
-        con.execute(
-            "INSERT OR REPLACE INTO rate_limit(key, fails, window_start, blocked_until) VALUES(?,0,?,0)",
-            (key, now),
-        )
-        con.commit()
-        con.close()
-        return True, "ok"
-    con.close()
+    """Auth rate limit — permanently soft-disabled.
+
+    Hard IP bans caused mass buyer lockouts ("Temporarily blocked") after
+    failed OTA/login spam and shared carrier IPs. Do not re-enable without
+    a careful rollout.
+    """
     return True, "ok"
 
 
+
 def rate_fail(key: str, max_fails: int, ban_sec: int) -> None:
-    try:
-        if not bool(all_settings().get("rate_limit_enabled", False)):
-            return
-    except Exception:
-        return
-    if int(max_fails or 0) <= 0:
-        return
-    now = int(time.time())
-    con = connect()
-    row = con.execute("SELECT * FROM rate_limit WHERE key=?", (key,)).fetchone()
-    if not row or now - int(row["window_start"]) > 3600:
-        con.execute(
-            "INSERT OR REPLACE INTO rate_limit(key, fails, window_start, blocked_until) VALUES(?,1,?,0)",
-            (key, now),
-        )
-    else:
-        fails = int(row["fails"]) + 1
-        blocked = now + ban_sec if fails >= max_fails else 0
-        con.execute(
-            "UPDATE rate_limit SET fails=?, blocked_until=? WHERE key=?",
-            (fails, blocked, key),
-        )
-    con.commit()
-    con.close()
+    return
+
 
 
 def rate_ok(key: str) -> None:
