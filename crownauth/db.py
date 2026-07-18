@@ -97,9 +97,10 @@ DEFAULT_SETTINGS = {
     # Protocol / OTA — kill old cracked APKs without touching updated buyers
     # Client sends proto + vc (versionCode). Raise min_* to force upgrade.
     "client_protocol_current": 3,
-    "min_client_protocol": 3,
-    "min_client_version_code": 1,
+    "min_client_protocol": 0,
+    "min_client_version_code": 0,
     "force_update": False,
+    "ota_enabled": False,
     # Public URL buyers see (no personal GitHub username). Server proxies from upstream.
     "update_apk_url": "https://crownauth-live.onrender.com/v2/apk",
     "update_apk_upstream": "https://github.com/WesleighKanee/crownauth-live/releases/latest/download/WhiteCrownsLoaderV2.apk",

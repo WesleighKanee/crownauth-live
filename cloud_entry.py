@@ -45,6 +45,14 @@ def main() -> None:
     db.set_setting("panel_password_enabled", True)
     db.set_setting("api_port", port)
     db.set_setting("api_bind", "0.0.0.0")
+    # CRITICAL: free-tier restore can revive old min_vc → OTA chrome loop.
+    # Keep forced OTA OFF on every boot.
+    db.set_setting("ota_enabled", False)
+    db.set_setting("force_update", False)
+    db.set_setting("min_client_version_code", 0)
+    db.set_setting("min_client_protocol", 0)
+    db.set_setting("blocked_build_ids", [])
+    db.set_setting("update_message", "")
 
     smod.PRIV, smod.PUB = load_or_create_keypair()
     once = owner_auth.bootstrap_if_needed()

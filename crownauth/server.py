@@ -81,8 +81,8 @@ def live_config() -> dict[str, Any]:
         "discord_url": s.get("discord_url"),
         "theme_accent": s.get("theme_accent"),
         "cfg_epoch": int(time.time()),
-        "min_proto": int(s.get("min_client_protocol") or 3),
-        "min_vc": int(s.get("min_client_version_code") or 1),
+        "min_proto": int(s.get("min_client_protocol") or 0),
+        "min_vc": int(s.get("min_client_version_code") or 0),
         "cur_proto": int(s.get("client_protocol_current") or 3),
         "force_update": bool(s.get("force_update")),
         "update_url": s.get("update_apk_url") or "",
@@ -91,15 +91,17 @@ def live_config() -> dict[str, Any]:
 
 
 def client_update_gate(body: dict) -> Optional[dict]:
-    """Gate old clients to OTA. Returns error payload or None if OK.
+    """OTA force-update gate.
 
-    Rules (order matters — never OTA-loop a client already on min_vc):
-      - min_proto / min_vc: only when client *reports* a lower value
-      - blocked_build_ids: exact build id match
-      - force_update: ONLY clients still below min_vc (or no vc reported).
-        Clients with vc >= min_vc always pass even if force_update=true.
+    HARD DISABLED by default (ota_enabled=False).
+    Forced browser OTA caused infinite update loops for sideload buyers:
+    install often fails/never replaces the running app, and free-tier DB
+    restore revived high min_vc after every cold start.
     """
     s = db.all_settings()
+    # Master switch — OFF unless owner explicitly enables later.
+    if not bool(s.get("ota_enabled", False)):
+        return None
     try:
         proto = int(body.get("proto") or body.get("protocol") or 0)
     except Exception:
@@ -115,14 +117,12 @@ def client_update_gate(body: dict) -> Optional[dict]:
     if not isinstance(blocked, list):
         blocked = []
     need = False
-    # Only reject clients that *report* an old proto/vc — missing fields = soft-compatible
     if min_proto and proto and proto < min_proto:
         need = True
     if min_vc and vc and vc < min_vc:
         need = True
     if bid and bid in [str(x) for x in blocked]:
         need = True
-    # force_update must NOT re-block people who already installed the current floor
     if bool(s.get("force_update")):
         already_current = bool(min_vc and vc and vc >= min_vc)
         if not already_current:
@@ -132,10 +132,7 @@ def client_update_gate(body: dict) -> Optional[dict]:
     url = str(s.get("update_apk_url") or "").strip()
     if not url:
         url = "https://crownauth-live.onrender.com/v2/apk"
-    msg = str(
-        s.get("update_message")
-        or "A new update is available — tap OK / allow install. Or open the download link."
-    )
+    msg = str(s.get("update_message") or "A new update is available")
     return {
         "ok": False,
         "error": msg,
@@ -145,6 +142,8 @@ def client_update_gate(body: dict) -> Optional[dict]:
         "min_vc": min_vc,
         "button": "Update Now",
     }
+
+
 
 
 def signed_live_config() -> str:
@@ -741,8 +740,8 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
                     "b": "ota_wc_v2",
-                    "min_proto": int(s.get("min_client_protocol") or 3),
-                    "min_vc": int(s.get("min_client_version_code") or 1),
+                    "min_proto": int(s.get("min_client_protocol") or 0),
+                    "min_vc": int(s.get("min_client_version_code") or 0),
                 }
             )
         if path == cpre + "/version":
@@ -752,8 +751,8 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 {
                     "ok": True,
                     "proto": int(s.get("client_protocol_current") or 3),
-                    "min_proto": int(s.get("min_client_protocol") or 3),
-                    "min_vc": int(s.get("min_client_version_code") or 1),
+                    "min_proto": int(s.get("min_client_protocol") or 0),
+                    "min_vc": int(s.get("min_client_version_code") or 0),
                     "force_update": bool(s.get("force_update")),
                     "url": pub_url,
                     "message": s.get("update_message") or "",
