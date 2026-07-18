@@ -53,6 +53,15 @@ def main() -> None:
     db.set_setting("min_client_protocol", 0)
     db.set_setting("blocked_build_ids", [])
     db.set_setting("update_message", "")
+    # Never lock buyers behind rate bans (testing / cold starts / shared IPs)
+    db.set_setting("rate_limit_enabled", False)
+    db.set_setting("max_failed_auth", 500)
+    db.set_setting("ban_duration_sec", 60)
+    try:
+        n = db.rate_clear_all()
+        print(f"rate_limit cleared: {n}")
+    except Exception as e:
+        print(f"rate_limit clear skip: {e}")
 
     smod.PRIV, smod.PUB = load_or_create_keypair()
     once = owner_auth.bootstrap_if_needed()

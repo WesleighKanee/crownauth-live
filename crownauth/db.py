@@ -41,8 +41,9 @@ DEFAULT_SETTINGS = {
     "api_bind": "0.0.0.0",
     "api_port": 8787,
     "require_challenge": True,
-    "max_failed_auth": 12,
-    "ban_duration_sec": 3600,
+    "max_failed_auth": 500,
+    "ban_duration_sec": 60,
+    "rate_limit_enabled": False,
     "webhook_url": "",
     # Optional Discord webhook only (off by default — no Telegram)
     "notify_enabled": False,
@@ -966,7 +967,24 @@ def list_blacklist() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def rate_clear_all() -> int:
+    con = connect()
+    cur = con.execute("DELETE FROM rate_limit")
+    n = cur.rowcount if cur.rowcount is not None else 0
+    con.commit()
+    con.close()
+    return int(n or 0)
+
+
 def rate_check(key: str, max_fails: int, ban_sec: int) -> tuple[bool, str]:
+    # Master off-switch — buyers must never get stuck behind our test spam / free-tier noise
+    try:
+        if not bool(all_settings().get("rate_limit_enabled", False)):
+            return True, "ok"
+    except Exception:
+        return True, "ok"
+    if int(max_fails or 0) <= 0:
+        return True, "ok"
     now = int(time.time())
     con = connect()
     row = con.execute("SELECT * FROM rate_limit WHERE key=?", (key,)).fetchone()
@@ -986,6 +1004,13 @@ def rate_check(key: str, max_fails: int, ban_sec: int) -> tuple[bool, str]:
 
 
 def rate_fail(key: str, max_fails: int, ban_sec: int) -> None:
+    try:
+        if not bool(all_settings().get("rate_limit_enabled", False)):
+            return
+    except Exception:
+        return
+    if int(max_fails or 0) <= 0:
+        return
     now = int(time.time())
     con = connect()
     row = con.execute("SELECT * FROM rate_limit WHERE key=?", (key,)).fetchone()
