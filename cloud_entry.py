@@ -53,6 +53,7 @@ def main() -> None:
     db.set_setting("min_client_protocol", 0)
     db.set_setting("blocked_build_ids", [])
     db.set_setting("update_message", "")
+    db.set_setting("update_apk_url", "")
     # Never lock buyers behind rate bans (testing / cold starts / shared IPs)
     db.set_setting("rate_limit_enabled", False)
     db.set_setting("max_failed_auth", 500)

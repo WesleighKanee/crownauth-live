@@ -91,57 +91,13 @@ def live_config() -> dict[str, Any]:
 
 
 def client_update_gate(body: dict) -> Optional[dict]:
-    """OTA force-update gate.
+    """Forced OTA is permanently disabled.
 
-    HARD DISABLED by default (ota_enabled=False).
-    Forced browser OTA caused infinite update loops for sideload buyers:
-    install often fails/never replaces the running app, and free-tier DB
-    restore revived high min_vc after every cold start.
+    Forever policy (owner request 2026-07-18): never return action=update.
+    Buyers must log in on whatever sideload build they already have.
+    Manual APK distribution only — no Chrome force loop.
     """
-    s = db.all_settings()
-    # Master switch — OFF unless owner explicitly enables later.
-    if not bool(s.get("ota_enabled", False)):
-        return None
-    try:
-        proto = int(body.get("proto") or body.get("protocol") or 0)
-    except Exception:
-        proto = 0
-    try:
-        vc = int(body.get("vc") or body.get("version_code") or 0)
-    except Exception:
-        vc = 0
-    bid = str(body.get("bid") or body.get("build") or "").strip()
-    min_proto = int(s.get("min_client_protocol") or 0)
-    min_vc = int(s.get("min_client_version_code") or 0)
-    blocked = s.get("blocked_build_ids") or []
-    if not isinstance(blocked, list):
-        blocked = []
-    need = False
-    if min_proto and proto and proto < min_proto:
-        need = True
-    if min_vc and vc and vc < min_vc:
-        need = True
-    if bid and bid in [str(x) for x in blocked]:
-        need = True
-    if bool(s.get("force_update")):
-        already_current = bool(min_vc and vc and vc >= min_vc)
-        if not already_current:
-            need = True
-    if not need:
-        return None
-    url = str(s.get("update_apk_url") or "").strip()
-    if not url:
-        url = "https://crownauth-live.onrender.com/v2/apk"
-    msg = str(s.get("update_message") or "A new update is available")
-    return {
-        "ok": False,
-        "error": msg,
-        "action": "update",
-        "url": url,
-        "min_proto": min_proto,
-        "min_vc": min_vc,
-        "button": "Update Now",
-    }
+    return None
 
 
 
@@ -739,7 +695,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "m": 1 if s.get("maintenance") else 0,
                     "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
-                    "b": "rate_off_v1",
+                    "b": "forever_v1",
                     "min_proto": int(s.get("min_client_protocol") or 0),
                     "min_vc": int(s.get("min_client_version_code") or 0),
                 }
@@ -1039,9 +995,30 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 return
 
             if path == "/api/settings":
+                # FOREVER lock — panel/scripts cannot re-enable buyer-breaking gates
+                locked_false = {
+                    "force_update", "ota_enabled", "rate_limit_enabled",
+                    "kill_switch",  # still allow via /api/kill intentionally
+                }
+                # kill_switch stays controllable via dedicated endpoint only
                 for k, v in body.items():
+                    if k in ("force_update", "ota_enabled", "rate_limit_enabled"):
+                        continue  # ignore attempts to re-enable
+                    if k in ("min_client_version_code", "min_client_protocol"):
+                        # never raise floors that force OTA
+                        try:
+                            if int(v) > 0:
+                                continue
+                        except Exception:
+                            continue
                     if k in db.DEFAULT_SETTINGS or k in db.all_settings():
                         db.set_setting(k, v)
+                # re-assert safe forever values after any settings write
+                db.set_setting("force_update", False)
+                db.set_setting("ota_enabled", False)
+                db.set_setting("rate_limit_enabled", False)
+                db.set_setting("min_client_version_code", 0)
+                db.set_setting("min_client_protocol", 0)
                 try:
                     from crownauth.persist import schedule_backup
 
