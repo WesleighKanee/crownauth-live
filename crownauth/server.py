@@ -739,7 +739,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "m": 1 if s.get("maintenance") else 0,
                     "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
-                    "b": "ota_wc_v2",
+                    "b": "ota_off_v1",
                     "min_proto": int(s.get("min_client_protocol") or 0),
                     "min_vc": int(s.get("min_client_version_code") or 0),
                 }
