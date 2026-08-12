@@ -728,6 +728,44 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 return self._send(404, b"Not Found", "text/plain")
             return self._json({"ok": True, "k": public_raw_bytes(PUB).hex()})
 
+        # mod library manifest (public, read-only) — app fetches this
+        if path == cpre + "/libs":
+            host = str(db.get_setting("client_api_host") or "").strip()
+            scheme = str(db.get_setting("client_api_scheme") or "https").strip()
+            base = "%s://%s" % (scheme, host) if host else ""
+            libs = []
+            for r in db.lib_list(enabled_only=True):
+                url = "%s%s/libs/%s" % (base, cpre, r["name"]) if base else "%s/libs/%s" % (cpre, r["name"])
+                libs.append({
+                    "name": r["name"],
+                    "version": r.get("version") or "",
+                    "size": r.get("size") or 0,
+                    "md5": r.get("md5") or "",
+                    "url": url,
+                })
+            return self._json({"ok": True, "libs": libs})
+        # mod library download (public, enabled only)
+        if path.startswith(cpre + "/libs/"):
+            name = urllib.parse.unquote(path[len(cpre) + len("/libs/"):]).strip("/")
+            lib = db.lib_get(name)
+            if not lib or not lib.get("enabled"):
+                return self._send(404, b"not found", "text/plain")
+            fp = db.lib_data_path(name)
+            if not fp.is_file():
+                return self._send(404, b"not found", "text/plain")
+            with open(fp, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
+            self.send_header("ETag", '"%s"' % (lib.get("md5") or ""))
+            self.send_header("Cache-Control", "public, max-age=60")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         # auth status for panel (no secret leak)
         if path == "/auth/status":
             allowed = self._ip_allowed_owner(self._ip())
@@ -779,6 +817,8 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
         if path.startswith("/api/"):
             if not self._require_owner():
                 return
+            if path == "/api/libs":
+                return self._json({"ok": True, "libs": db.lib_list()})
             if path == "/api/dashboard":
                 return self._json(
                     {
@@ -836,7 +876,17 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
 
     def _route_post(self) -> None:
         path = urllib.parse.urlparse(self.path).path
-        body = self._read_json()
+        # Read the raw body ONCE up front. JSON handlers parse it below;
+        # the /api/libs/upload handler needs the raw bytes (so _read_json
+        # must NOT consume the stream first).
+        _body_len = int(self.headers.get("Content-Length") or 0)
+        _raw_body = self.rfile.read(_body_len) if _body_len else b"{}"
+        body = {}
+        if _body_len <= 262144:
+            try:
+                body = json.loads(_raw_body.decode("utf-8") or "{}")
+            except Exception:
+                body = {}
         ip = self._ip()
         cpre = self._client_prefix()
 
@@ -993,6 +1043,34 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
         if path.startswith("/api/"):
             if not self._require_owner():
                 return
+
+            if path == "/api/libs/upload":
+                _qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                name = (_qs.get("name") or [""])[0].strip()
+                version = (_qs.get("version") or [""])[0].strip()
+                note = (_qs.get("note") or [""])[0].strip()
+                n = _body_len
+                if n <= 0 or n > 64 * 1024 * 1024:
+                    return self._json({"ok": False, "error": "bad body size"}, 400)
+                try:
+                    lib = db.lib_save(name, _raw_body, version, note)
+                except Exception as e:
+                    return self._json({"ok": False, "error": "save failed: %s" % e}, 400)
+                return self._json({"ok": True, "lib": lib})
+
+            if path == "/api/libs/toggle":
+                name = (body.get("name") or "").strip()
+                if not name:
+                    return self._json({"ok": False, "error": "missing name"}, 400)
+                db.lib_set_enabled(name, bool(body.get("enabled")))
+                return self._json({"ok": True, "name": name, "enabled": bool(body.get("enabled"))})
+
+            if path == "/api/libs/delete":
+                name = (body.get("name") or "").strip()
+                if not name:
+                    return self._json({"ok": False, "error": "missing name"}, 400)
+                db.lib_delete(name)
+                return self._json({"ok": True, "name": name})
 
             if path == "/api/settings":
                 # FOREVER lock — panel/scripts cannot re-enable buyer-breaking gates

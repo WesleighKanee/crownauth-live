@@ -202,6 +202,15 @@ def init_db() -> None:
             window_start INTEGER NOT NULL,
             blocked_until INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS libs (
+            name TEXT PRIMARY KEY,
+            version TEXT DEFAULT '',
+            size INTEGER NOT NULL DEFAULT 0,
+            md5 TEXT DEFAULT '',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            note TEXT DEFAULT '',
+            created_at INTEGER NOT NULL DEFAULT 0
+        );
         CREATE TABLE IF NOT EXISTS resellers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
@@ -1152,3 +1161,78 @@ def list_licenses_for_reseller(name: str) -> list[dict]:
     con.close()
     now = int(time.time())
     return [enrich_license_row(dict(r), now) for r in rows]
+
+
+# ---------------- mod library (remote mod feed) ----------------
+
+def lib_data_dir() -> Path:
+    d = DATA / "libs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def lib_save(name: str, data: bytes, version: str = "", note: str = "") -> dict:
+    """Upsert a mod lib; binary stored under DATA/libs/. Returns row dict."""
+    import hashlib as _hl
+
+    name = (name or "").strip().replace("/", "_").replace("\\", "_").replace("..", "_")
+    if not name:
+        raise ValueError("bad lib name")
+    if not name.lower().endswith(".so"):
+        name = name + ".so"
+    (lib_data_dir() / name).write_bytes(data)
+    md5 = _hl.md5(data).hexdigest()
+    size = len(data)
+    now = int(time.time())
+    con = connect()
+    con.execute(
+        """INSERT INTO libs(name, version, size, md5, enabled, note, created_at)
+           VALUES(?,?,?,?,1,?,?)
+           ON CONFLICT(name) DO UPDATE SET
+             version=excluded.version, size=excluded.size, md5=excluded.md5,
+             note=excluded.note""",
+        (name, version, size, md5, note, now),
+    )
+    con.commit()
+    con.close()
+    audit("owner", "lib.upload", name)
+    return {"name": name, "version": version, "size": size, "md5": md5, "enabled": 1, "note": note}
+
+
+def lib_list(enabled_only: bool = False) -> list:
+    con = connect()
+    q = "SELECT * FROM libs" + (" WHERE enabled=1" if enabled_only else "") + " ORDER BY name"
+    rows = con.execute(q).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def lib_get(name: str) -> dict | None:
+    con = connect()
+    row = con.execute("SELECT * FROM libs WHERE name=?", (name,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def lib_set_enabled(name: str, enabled: bool) -> None:
+    con = connect()
+    con.execute("UPDATE libs SET enabled=? WHERE name=?", (1 if enabled else 0, name))
+    con.commit()
+    con.close()
+    audit("owner", "lib.toggle", "%s=%s" % (name, enabled))
+
+
+def lib_delete(name: str) -> None:
+    con = connect()
+    con.execute("DELETE FROM libs WHERE name=?", (name,))
+    con.commit()
+    con.close()
+    try:
+        (lib_data_dir() / name).unlink(missing_ok=True)
+    except Exception:
+        pass
+    audit("owner", "lib.delete", name)
+
+
+def lib_data_path(name: str) -> Path:
+    return lib_data_dir() / name

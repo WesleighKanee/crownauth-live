@@ -1,7 +1,13 @@
 {
-  "guide": "GO_LIVE_FREE.md",
-  "chosen": "Render free + UptimeRobot keep-awake",
-  "next": "User creates free GitHub + Render, pastes onrender.com URL, then bake once",
-  "oracle": "blocked: region",
-  "fly": "blocked: high-risk + 10 USD auth - skip"
+  "plan": "free",
+  "note": "Free tier - use UptimeRobot every 5 min on /v2/health to reduce sleep",
+  "hostname": "crownauth-live.onrender.com",
+  "provider": "render",
+  "dashboard": "https://dashboard.render.com/web/srv-d9chidihil2s73fi1it0",
+  "updated": "2026-07-17T01:50:16.9914804+08:00",
+  "owner": "https://crownauth-live.onrender.com/app/owner/auth/login",
+  "scheme": "https",
+  "seller": "https://crownauth-live.onrender.com/app/user/auth/login",
+  "github": "https://github.com/WesleighKanee/crownauth-live",
+  "health": "https://crownauth-live.onrender.com/v2/health"
 }

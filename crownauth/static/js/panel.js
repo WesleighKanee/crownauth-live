@@ -193,6 +193,7 @@ function setView(name) {
     blacklist: ["Blocks", "Device / IP deny list"],
     audit: ["Activity", "What you and the server did"],
     resellers: ["Resellers", "Limited accounts that only mint keys"],
+    libs: ["Library", "Mods the app downloads automatically"],
     brand: ["Settings", "Brand + deploy host for APK"],
   };
   const t = titles[name] || [name, ""];
@@ -704,6 +705,7 @@ async function refreshView() {
     if (state.view === "blacklist") await refreshBlacklist();
     if (state.view === "audit") await refreshAudit();
     if (state.view === "resellers") await refreshResellers();
+    if (state.view === "libs") await refreshLibs();
     if (state.view === "brand") {
       await refreshDash();
       fillBrand();
@@ -1096,3 +1098,82 @@ setInterval(() => {
 
 wire();
 trySession();
+
+
+// ---------------- Library (mod feed) ----------------
+function fmtSize(n) {
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(0) + " KB";
+  return n + " B";
+}
+
+async function refreshLibs() {
+  const d = await api("/api/libs");
+  const tb = $("#libsBody");
+  tb.innerHTML = "";
+  (d.libs || []).forEach((L) => {
+    const tr = document.createElement("tr");
+    const md = (L.md5 || "").slice(0, 10);
+    tr.innerHTML =
+      '<td class="mono">' + esc(L.name) + "</td>" +
+      "<td>" + esc(L.version || "") + "</td>" +
+      "<td>" + fmtSize(L.size || 0) + "</td>" +
+      '<td class="mono" title="' + esc(L.md5 || "") + '">' + md + "&hellip;</td>" +
+      "<td>" + (L.enabled ? "✅" : "⛔") + "</td>" +
+      '<td><button class="btn ghost" data-act="toggle" data-name="' + esc(L.name) + '">' +
+      (L.enabled ? "Disable" : "Enable") + "</button> " +
+      '<button class="btn ghost" data-act="del" data-name="' + esc(L.name) + '">Delete</button></td>';
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll("button[data-act]").forEach((b) => {
+    b.onclick = async () => {
+      const name = b.dataset.name;
+      if (b.dataset.act === "del") {
+        if (!confirm("Delete " + name + "?")) return;
+        await api("/api/libs/delete", { method: "POST", body: JSON.stringify({ name }) });
+      } else {
+        const all = await api("/api/libs");
+        const lib = (all.libs || []).find((x) => x.name === name);
+        await api("/api/libs/toggle", { method: "POST", body: JSON.stringify({ name, enabled: !(lib && lib.enabled) }) });
+      }
+      await refreshLibs();
+    };
+  });
+  $("#libsOut").textContent = ((d.libs || []).length) + " mod(s) in library";
+}
+
+function wireLibs() {
+  const btn = $("#btnLibUpload");
+  if (!btn) return;
+  btn.onclick = async () => {
+    const name = $("#libName").value.trim();
+    const ver = $("#libVer").value.trim();
+    const note = $("#libNote").value.trim();
+    const file = $("#libFile").files[0];
+    const out = $("#libUploadOut");
+    if (!name || !file) { out.textContent = "Name and file are required."; return; }
+    btn.disabled = true;
+    out.textContent = "Uploading " + file.name + " (" + fmtSize(file.size) + ") &hellip;";
+    try {
+      const res = await fetch(
+        "/api/libs/upload?name=" + encodeURIComponent(name) +
+        "&version=" + encodeURIComponent(ver) + "&note=" + encodeURIComponent(note),
+        { method: "POST", headers: { Authorization: "Bearer " + state.session }, body: file }
+      );
+      const j = await res.json();
+      if (j.ok) {
+        out.innerHTML = "✅ <b>" + esc(j.lib.name) + "</b> added (" + fmtSize(j.lib.size) + ") — visible in the app now.";
+        ["libName", "libVer", "libNote"].forEach((i) => { $("#" + i).value = ""; });
+        $("#libFile").value = "";
+        await refreshLibs();
+      } else {
+        out.textContent = "Error: " + (j.error || "upload failed");
+      }
+    } catch (e) {
+      out.textContent = "Upload failed: " + e.message;
+    }
+    btn.disabled = false;
+  };
+}
+
+wireLibs();
