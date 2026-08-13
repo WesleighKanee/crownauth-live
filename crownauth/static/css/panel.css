@@ -806,11 +806,11 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .stat-card.bad { box-shadow: inset 0 0 0 1px rgba(251,113,133,.2), var(--shadow); }
 
 .cover-thumb {
-  width: 36px;
+  width: 42px;
   height: 64px;
   object-fit: cover;
-  object-position: center 28%;
-  border-radius: 6px;
+  object-position: center center;
+  border-radius: 8px;
   border: 1px solid var(--line2);
   background: var(--bg3);
   display: block;

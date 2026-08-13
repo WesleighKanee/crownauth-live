@@ -794,7 +794,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 self._cors()
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(data)))
-                self.send_header("Cache-Control", "public, max-age=120")
+                self.send_header("Cache-Control", "public, max-age=30")
                 self.end_headers()
                 self.wfile.write(data)
                 return

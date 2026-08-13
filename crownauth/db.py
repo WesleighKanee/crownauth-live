@@ -1353,13 +1353,13 @@ def lib_has_cover(name: str) -> bool:
         return False
 
 
-# Deck card is ~280×554 (9:16). Stored covers are center-cropped to this.
-COVER_W = 720
-COVER_H = 1280
+# Keep the photographer's framing. Only downscale huge files. The card
+# uses object-fit:cover so any aspect fills any phone without a hard crop.
+COVER_MAX_EDGE = 1600
 
 
 def _cover_bytes(data: bytes) -> bytes:
-    """Accept jpg/png/webp; crop-resize to 720×1280 JPEG when Pillow is present."""
+    """Accept jpg/png/webp. Fix EXIF rotation, downscale long edge, keep full frame."""
     if not data or len(data) < 32 or len(data) > 4 * 1024 * 1024:
         raise ValueError("cover must be an image under 4 MB")
     head = data[:8]
@@ -1367,24 +1367,20 @@ def _cover_bytes(data: bytes) -> bytes:
         raise ValueError("cover must be jpg, png, or webp")
     try:
         from io import BytesIO
-        from PIL import Image
+        from PIL import Image, ImageOps
 
         im = Image.open(BytesIO(data))
+        im = ImageOps.exif_transpose(im)
         im = im.convert("RGB")
         sw, sh = im.size
         if sw < 8 or sh < 8:
             raise ValueError("cover image is too small")
-        scale = max(COVER_W / float(sw), COVER_H / float(sh))
-        nw = max(COVER_W, int(sw * scale + 0.5))
-        nh = max(COVER_H, int(sh * scale + 0.5))
-        im = im.resize((nw, nh), Image.Resampling.LANCZOS)
-        left = max(0, (nw - COVER_W) // 2)
-        top = max(0, int((nh - COVER_H) * 0.28))
-        if top + COVER_H > nh:
-            top = max(0, nh - COVER_H)
-        im = im.crop((left, top, left + COVER_W, top + COVER_H))
+        edge = max(sw, sh)
+        if edge > COVER_MAX_EDGE:
+            scale = COVER_MAX_EDGE / float(edge)
+            im = im.resize((max(1, int(sw * scale + 0.5)), max(1, int(sh * scale + 0.5))), Image.Resampling.LANCZOS)
         buf = BytesIO()
-        im.save(buf, format="JPEG", quality=86, optimize=True)
+        im.save(buf, format="JPEG", quality=92, optimize=True, progressive=True)
         return buf.getvalue()
     except ValueError:
         raise
