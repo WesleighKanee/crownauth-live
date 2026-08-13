@@ -1107,6 +1107,38 @@ function fmtSize(n) {
   return n + " B";
 }
 
+async function uploadCover(name, file, outEl) {
+  const stem = normalizeLibName(name).replace(/\.so$/i, "");
+  if (!stem || !file) throw new Error("name and image required");
+  if (outEl) outEl.textContent = "Uploading cover for " + stem + " …";
+  const res = await fetch(
+    "/api/libs/cover?name=" + encodeURIComponent(stem),
+    { method: "POST", headers: { Authorization: "Bearer " + state.session }, body: file }
+  );
+  const j = await res.json();
+  if (!j.ok) throw new Error(j.error || "cover failed");
+  if (outEl) outEl.textContent = "Cover set for " + stem + " — deck picks it up on next SYNC.";
+  return j;
+}
+
+function pickCoverFor(name) {
+  const inp = $("#libCoverPick");
+  if (!inp) return;
+  inp.value = "";
+  inp.onchange = async () => {
+    const file = inp.files[0];
+    inp.onchange = null;
+    if (!file) return;
+    try {
+      await uploadCover(name, file, $("#libsOut"));
+      await refreshLibs();
+    } catch (e) {
+      $("#libsOut").textContent = "Cover failed: " + e.message;
+    }
+  };
+  inp.click();
+}
+
 async function refreshLibs() {
   const d = await api("/api/libs");
   const tb = $("#libsBody");
@@ -1114,13 +1146,24 @@ async function refreshLibs() {
   (d.libs || []).forEach((L) => {
     const tr = document.createElement("tr");
     const md = (L.md5 || "").slice(0, 10);
+    const card = L.card || String(L.name || "").replace(/^lib/i, "").replace(/\.so$/i, "").toUpperCase();
+    const coverSrc = L.cover
+      ? "/v2/libs/" + encodeURIComponent(card) + "/cover?t=" + encodeURIComponent(String(L.md5 || L.size || "1"))
+      : "";
     tr.innerHTML =
-      '<td class="mono">' + esc(L.name) + "</td>" +
-      "<td>" + esc(L.version || "") + "</td>" +
-      "<td>" + fmtSize(L.size || 0) + "</td>" +
-      '<td class="mono" title="' + esc(L.md5 || "") + '">' + md + "&hellip;</td>" +
-      "<td>" + (L.enabled ? "✅" : "⛔") + "</td>" +
-      '<td><button class="btn ghost" data-act="toggle" data-name="' + esc(L.name) + '">' +
+      '<td class="mono" data-label="Name">' + esc(L.name) +
+      (card ? ' <span class="pill" title="deck card">'+esc(card)+"</span>" : "") +
+      "</td>" +
+      '<td data-label="Version">' + esc(L.version || "") + "</td>" +
+      '<td data-label="Size">' + fmtSize(L.size || 0) + "</td>" +
+      '<td class="mono" data-label="MD5" title="' + esc(L.md5 || "") + '">' + md + "&hellip;</td>" +
+      '<td data-label="Cover">' +
+        (coverSrc ? '<img class="cover-thumb" alt="" src="' + coverSrc + '">' : '<span class="pill">fallback</span>') +
+      "</td>" +
+      '<td data-label="On">' + (L.enabled ? "✅" : "⛔") + "</td>" +
+      '<td class="actions">' +
+      '<button class="btn ghost" data-act="cover" data-name="' + esc(L.name) + '">Cover</button> ' +
+      '<button class="btn ghost" data-act="toggle" data-name="' + esc(L.name) + '">' +
       (L.enabled ? "Disable" : "Enable") + "</button> " +
       '<button class="btn ghost" data-act="del" data-name="' + esc(L.name) + '">Delete</button></td>';
     tb.appendChild(tr);
@@ -1128,6 +1171,10 @@ async function refreshLibs() {
   tb.querySelectorAll("button[data-act]").forEach((b) => {
     b.onclick = async () => {
       const name = b.dataset.name;
+      if (b.dataset.act === "cover") {
+        pickCoverFor(name);
+        return;
+      }
       if (b.dataset.act === "del") {
         if (!confirm("Delete " + name + "?")) return;
         await api("/api/libs/delete", { method: "POST", body: JSON.stringify({ name }) });
@@ -1142,18 +1189,38 @@ async function refreshLibs() {
   $("#libsOut").textContent = ((d.libs || []).length) + " mod(s) in library";
 }
 
+/** Match server lib_normalize_name: STEM.so ALL-CAPS for deck card ids. */
+function normalizeLibName(raw) {
+  let s = String(raw || "").trim().replace(/\\/g, "/").split("/").pop() || "";
+  if (s.toLowerCase().endsWith(".so")) s = s.slice(0, -3);
+  if (s.length > 3 && s.slice(0, 3).toLowerCase() === "lib") s = s.slice(3);
+  s = s.replace(/[^A-Za-z0-9_-]/g, "").toUpperCase();
+  return s ? s + ".so" : "";
+}
+
 function wireLibs() {
   const btn = $("#btnLibUpload");
   if (!btn) return;
+  const nameIn = $("#libName");
+  if (nameIn) {
+    nameIn.addEventListener("blur", () => {
+      const n = normalizeLibName(nameIn.value);
+      if (n) nameIn.value = n.replace(/\.so$/i, "");
+    });
+  }
   btn.onclick = async () => {
-    const name = $("#libName").value.trim();
+    let name = $("#libName").value.trim();
+    // if only a file was picked, derive card name from filename
+    const file = $("#libFile").files[0];
+    if (!name && file) name = file.name;
+    name = normalizeLibName(name);
     const ver = $("#libVer").value.trim();
     const note = $("#libNote").value.trim();
-    const file = $("#libFile").files[0];
     const out = $("#libUploadOut");
-    if (!name || !file) { out.textContent = "Name and file are required."; return; }
+    if (!name || !file) { out.textContent = "Name and file are required (e.g. OWLHAX)."; return; }
+    if (nameIn) nameIn.value = name.replace(/\.so$/i, "");
     btn.disabled = true;
-    out.textContent = "Uploading " + file.name + " (" + fmtSize(file.size) + ") &hellip;";
+    out.textContent = "Uploading " + file.name + " as " + name + " (" + fmtSize(file.size) + ") …";
     try {
       const res = await fetch(
         "/api/libs/upload?name=" + encodeURIComponent(name) +
@@ -1162,9 +1229,25 @@ function wireLibs() {
       );
       const j = await res.json();
       if (j.ok) {
-        out.innerHTML = "✅ <b>" + esc(j.lib.name) + "</b> added (" + fmtSize(j.lib.size) + ") — visible in the app now.";
+        const card = (j.card || (j.lib && j.lib.card) || name.replace(/\.so$/i, "")).toString();
+        const coverFile = $("#libCover") && $("#libCover").files[0];
+        let coverNote = "";
+        if (coverFile) {
+          try {
+            await uploadCover(card, coverFile, null);
+            coverNote = " Cover applied.";
+          } catch (ce) {
+            coverNote = " Cover failed: " + ce.message;
+          }
+        }
+        out.innerHTML =
+          "✅ <b>" + esc(j.lib.name) + "</b> added (" + fmtSize(j.lib.size) + ")" +
+          " — deck card <b>" + esc(card) + "</b>, file on phone <code>lib" + esc(card) + ".so</code>." +
+          coverNote +
+          " App picks it up on next SYNC (panel must stay awake).";
         ["libName", "libVer", "libNote"].forEach((i) => { $("#" + i).value = ""; });
         $("#libFile").value = "";
+        if ($("#libCover")) $("#libCover").value = "";
         await refreshLibs();
       } else {
         out.textContent = "Error: " + (j.error || "upload failed");

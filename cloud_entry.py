@@ -24,9 +24,9 @@ def main() -> None:
     pub = (os.environ.get("PUBLIC_HOST") or "").strip().lower()
     pub = pub.replace("https://", "").replace("http://", "").split("/")[0]
 
-    # Free tier: restore DB+secrets from GitHub backup before init (if wipe happened)
+    # Free tier: restore DB+secrets+libs from GitHub before init (if wipe happened)
     try:
-        from crownauth.persist import restore_if_needed, schedule_backup
+        from crownauth.persist import restore_if_needed
 
         ok_r, msg_r = restore_if_needed()
         print(f"persist restore: {ok_r} {msg_r}")
@@ -34,6 +34,14 @@ def main() -> None:
         print(f"persist restore skip: {e}")
 
     db.init_db()
+    # Second pass: DB may have lib rows after init while DATA/libs is still empty.
+    try:
+        from crownauth.persist import heal_missing_libs
+
+        ok_h, msg_h = heal_missing_libs()
+        print(f"persist heal: {ok_h} {msg_h}")
+    except Exception as e:
+        print(f"persist heal skip: {e}")
     if pub:
         db.set_setting("client_api_host", pub)
         db.set_setting("client_api_scheme", "https")
@@ -80,9 +88,34 @@ def main() -> None:
     print(f"  Owner:  https://{host_show}/app/owner/auth/login")
     print(f"  Seller: https://{host_show}/app/user/auth/login")
     print(f"  Health: https://{host_show}/v2/health")
+    print(f"  Ping:   https://{host_show}/v2/ping")
     if once:
         print(f"  FIRST password: {once}  (also in secrets/OWNER_PASSWORD_ONCE.txt)")
     print("=" * 56)
+
+    # Internal tick keeps in-process caches warm AFTER boot. It does NOT stop
+    # Render free-tier sleep — the whole dyno freezes when no EXTERNAL HTTP
+    # arrives for ~15 min. Point UptimeRobot or cron-job.org at:
+    #   GET/HEAD https://<PUBLIC_HOST>/v2/ping   every 5 min (cheapest)
+    #   GET/HEAD https://<PUBLIC_HOST>/v2/health every 5 min (also fine)
+    def _keepalive() -> None:
+        import time
+        import urllib.request
+
+        ping = f"http://127.0.0.1:{port}/v2/ping"
+        health = f"http://127.0.0.1:{port}/v2/health"
+        while True:
+            time.sleep(240)
+            for url in (ping, health):
+                try:
+                    urllib.request.urlopen(url, timeout=15).read()
+                    break
+                except Exception:
+                    continue
+
+    import threading
+
+    threading.Thread(target=_keepalive, daemon=True, name="agor-keepalive").start()
 
     httpd = ThreadingHTTPServer(("0.0.0.0", port), smod.Handler)
     httpd.serve_forever()

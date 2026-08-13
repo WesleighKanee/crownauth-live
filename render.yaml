@@ -3,7 +3,8 @@
 # Or: New Web Service > Docker > root = owner_panel
 #
 # After deploy, set PUBLIC_HOST to your-service.onrender.com
-# Keep awake free: UptimeRobot ping https://YOUR.onrender.com/v2/health every 5 min
+# Keep awake free: UptimeRobot or cron-job.org GET/HEAD /v2/ping every 5 min
+# (/v2/health also works). Internal 127.0.0.1 ticks do NOT prevent free-tier sleep.
 
 services:
   - type: web

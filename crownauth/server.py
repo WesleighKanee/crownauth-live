@@ -528,7 +528,7 @@ class Handler(BaseHTTPRequestHandler):
         """UptimeRobot and similar monitors often use HEAD — was 501 before."""
         path = urllib.parse.urlparse(self.path).path
         cpre = self._client_prefix()
-        if path in (cpre + "/health", "/health", "/"):
+        if path in (cpre + "/health", cpre + "/ping", "/health", "/ping", "/"):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", "0")
@@ -686,18 +686,34 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
             return self._file(fp, ctype)
 
         # client public API
+        # CRON / UptimeRobot keep-alive: cheapest wake. No DB. Render sleep
+        # needs EXTERNAL hits — 127.0.0.1 ticks in cloud_entry do not count.
+        if path in (cpre + "/ping", "/ping"):
+            return self._json({"ok": True, "pong": 1})
         if path == cpre + "/health":
             s = db.all_settings()
-            # minimal fingerprint + build stamp (confirms Render deploy)
+            lib_rows = []
+            disk_ok = True
+            try:
+                lib_rows = db.lib_list()
+                for r in lib_rows:
+                    fp = db.lib_data_path(r.get("name") or "")
+                    if not fp.is_file() or fp.stat().st_size <= 0:
+                        disk_ok = False
+                        break
+            except Exception:
+                disk_ok = False
             return self._json(
                 {
                     "ok": True,
                     "m": 1 if s.get("maintenance") else 0,
                     "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
-                    "b": "forever_v1",
+                    "b": "panel_libs_v27",
                     "min_proto": int(s.get("min_client_protocol") or 0),
                     "min_vc": int(s.get("min_client_version_code") or 0),
+                    "lib_count": len(lib_rows),
+                    "disk_ok": disk_ok,
                 }
             )
         if path == cpre + "/version":
@@ -729,37 +745,74 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
             return self._json({"ok": True, "k": public_raw_bytes(PUB).hex()})
 
         # mod library manifest (public, read-only) — app fetches this
+        # Client parser (JsBridge.syncCloud): JSONObject libs[] → name + md5.
+        # downloadLib uses name as URL path segment; libName() → card STEM.
+        # Canonical name is STEM.so (ALL-CAPS). card/enabled are extras for tools.
         if path == cpre + "/libs":
             host = str(db.get_setting("client_api_host") or "").strip()
             scheme = str(db.get_setting("client_api_scheme") or "https").strip()
             base = "%s://%s" % (scheme, host) if host else ""
             libs = []
             for r in db.lib_list(enabled_only=True):
-                url = "%s%s/libs/%s" % (base, cpre, r["name"]) if base else "%s/libs/%s" % (cpre, r["name"])
+                nm = r["name"]
+                url = "%s%s/libs/%s" % (base, cpre, nm) if base else "%s/libs/%s" % (cpre, nm)
+                card = r.get("card") or db.lib_card_name(nm)
+                has_cover = bool(r.get("cover") or db.lib_has_cover(nm))
                 libs.append({
-                    "name": r["name"],
+                    "name": nm,
+                    "card": card,
                     "version": r.get("version") or "",
-                    "size": r.get("size") or 0,
+                    "size": int(r.get("size") or 0),
                     "md5": r.get("md5") or "",
+                    "enabled": True,
                     "url": url,
+                    "cover": has_cover,
+                    "cover_url": ("%s%s/libs/%s/cover" % (base, cpre, card)) if has_cover and base else (
+                        ("%s/libs/%s/cover" % (cpre, card)) if has_cover else ""
+                    ),
                 })
             return self._json({"ok": True, "libs": libs})
-        # mod library download (public, enabled only)
+        # mod library download (public, enabled only) — STEM.so / libSTEM.so / STEM
         if path.startswith(cpre + "/libs/"):
             name = urllib.parse.unquote(path[len(cpre) + len("/libs/"):]).strip("/")
+            if name.lower().endswith("/cover") or name.lower().endswith(".cover.jpg"):
+                stem = name
+                if stem.lower().endswith("/cover"):
+                    stem = stem[: -len("/cover")]
+                elif stem.lower().endswith(".cover.jpg"):
+                    stem = stem[: -len(".cover.jpg")]
+                fp = db.lib_cover_path(stem)
+                if not fp.is_file():
+                    return self._send(404, b"no cover", "text/plain")
+                data = fp.read_bytes()
+                ctype = "image/jpeg"
+                if data.startswith(b"\x89PNG"):
+                    ctype = "image/png"
+                elif data.startswith(b"RIFF"):
+                    ctype = "image/webp"
+                self.send_response(200)
+                self._cors()
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=120")
+                self.end_headers()
+                self.wfile.write(data)
+                return
             lib = db.lib_get(name)
             if not lib or not lib.get("enabled"):
                 return self._send(404, b"not found", "text/plain")
-            fp = db.lib_data_path(name)
+            # Prefer DB row path (canonical file), not the URL alias string
+            fp = db.lib_data_path(lib.get("name") or name)
             if not fp.is_file():
                 return self._send(404, b"not found", "text/plain")
             with open(fp, "rb") as f:
                 data = f.read()
+            out_name = lib.get("name") or name
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
+            self.send_header("Content-Disposition", 'attachment; filename="%s"' % out_name)
             self.send_header("ETag", '"%s"' % (lib.get("md5") or ""))
             self.send_header("Cache-Control", "public, max-age=60")
             self.end_headers()
@@ -1044,6 +1097,25 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
             if not self._require_owner():
                 return
 
+            if path == "/api/libs/cover":
+                _qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                name = (_qs.get("name") or [""])[0].strip()
+                n = _body_len
+                if not name:
+                    return self._json({"ok": False, "error": "name required"}, 400)
+                if n <= 0 or n > 4 * 1024 * 1024:
+                    return self._json({"ok": False, "error": "cover must be under 4 MB"}, 400)
+                try:
+                    stem = db.lib_card_name(name)
+                    if not stem:
+                        return self._json({"ok": False, "error": "bad name"}, 400)
+                    out = db.lib_save_cover(stem, _raw_body)
+                except ValueError as e:
+                    return self._json({"ok": False, "error": str(e)}, 400)
+                except Exception as e:
+                    return self._json({"ok": False, "error": "cover save failed: %s" % e}, 400)
+                return self._json({"ok": True, "cover": out})
+
             if path == "/api/libs/upload":
                 _qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 name = (_qs.get("name") or [""])[0].strip()
@@ -1053,24 +1125,33 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 if n <= 0 or n > 64 * 1024 * 1024:
                     return self._json({"ok": False, "error": "bad body size"}, 400)
                 try:
+                    # normalize before save so panel + app share STEM.so
+                    name = db.lib_normalize_name(name)
                     lib = db.lib_save(name, _raw_body, version, note)
+                except ValueError as e:
+                    return self._json({"ok": False, "error": str(e) or "bad name"}, 400)
                 except Exception as e:
                     return self._json({"ok": False, "error": "save failed: %s" % e}, 400)
-                return self._json({"ok": True, "lib": lib})
+                return self._json({"ok": True, "lib": lib, "card": lib.get("card") or db.lib_card_name(lib["name"])})
 
             if path == "/api/libs/toggle":
                 name = (body.get("name") or "").strip()
                 if not name:
                     return self._json({"ok": False, "error": "missing name"}, 400)
-                db.lib_set_enabled(name, bool(body.get("enabled")))
-                return self._json({"ok": True, "name": name, "enabled": bool(body.get("enabled"))})
+                row = db.lib_get(name)
+                if not row:
+                    return self._json({"ok": False, "error": "not found"}, 404)
+                db.lib_set_enabled(row["name"], bool(body.get("enabled")))
+                return self._json({"ok": True, "name": row["name"], "enabled": bool(body.get("enabled"))})
 
             if path == "/api/libs/delete":
                 name = (body.get("name") or "").strip()
                 if not name:
                     return self._json({"ok": False, "error": "missing name"}, 400)
-                db.lib_delete(name)
-                return self._json({"ok": True, "name": name})
+                row = db.lib_get(name)
+                key = (row or {}).get("name") or name
+                db.lib_delete(key)
+                return self._json({"ok": True, "name": key})
 
             if path == "/api/settings":
                 # FOREVER lock — panel/scripts cannot re-enable buyer-breaking gates

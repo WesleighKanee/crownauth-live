@@ -1164,6 +1164,10 @@ def list_licenses_for_reseller(name: str) -> list[dict]:
 
 
 # ---------------- mod library (remote mod feed) ----------------
+# Canonical on-disk / manifest name: STEM.so (ALL-CAPS). Android libName()
+# strips lib/ and .so then uppercases → card id STEM; download writes
+# filesDir/libs/libSTEM.so. Store STEM.so so URL /v2/libs/STEM.so matches
+# what syncCloud puts in the path after the manifest name field.
 
 def lib_data_dir() -> Path:
     d = DATA / "libs"
@@ -1171,15 +1175,60 @@ def lib_data_dir() -> Path:
     return d
 
 
+def lib_normalize_name(name: str) -> str:
+    """STEM.so uppercase. Accepts OWLHAX / OWLHAX.so / libOWLHAX.so / libowlhax."""
+    raw = (name or "").strip().replace("\\", "/")
+    raw = raw.split("/")[-1].replace("..", "_")
+    if not raw:
+        raise ValueError("bad lib name")
+    stem = raw
+    if stem.lower().endswith(".so"):
+        stem = stem[:-3]
+    # one leading "lib" (Android loadLibrary form) — not part of card id
+    if len(stem) > 3 and stem[:3].lower() == "lib":
+        stem = stem[3:]
+    stem = "".join(c for c in stem if c.isalnum() or c in ("_", "-")).upper()
+    if not stem:
+        raise ValueError("bad lib name")
+    return stem + ".so"
+
+
+def lib_card_name(name: str) -> str:
+    """ALL-CAPS card id the loader deck shows (no lib/ no .so)."""
+    try:
+        return lib_normalize_name(name)[:-3]
+    except ValueError:
+        return (name or "").strip().upper()
+
+
 def lib_save(name: str, data: bytes, version: str = "", note: str = "") -> dict:
-    """Upsert a mod lib; binary stored under DATA/libs/. Returns row dict."""
+    """Upsert a mod lib; binary stored under DATA/libs/STEM.so. Returns row dict."""
     import hashlib as _hl
 
-    name = (name or "").strip().replace("/", "_").replace("\\", "_").replace("..", "_")
-    if not name:
-        raise ValueError("bad lib name")
-    if not name.lower().endswith(".so"):
-        name = name + ".so"
+    name = lib_normalize_name(name)
+    # drop legacy alias files for the same stem (libSTEM.so / mixed case)
+    stem = name[:-3]
+    for alias in (
+        f"lib{stem}.so",
+        f"lib{stem.lower()}.so",
+        f"{stem.lower()}.so",
+        f"{stem}.SO",
+        f"lib{stem}.SO",
+    ):
+        if alias == name:
+            continue
+        try:
+            (lib_data_dir() / alias).unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            con_a = connect()
+            con_a.execute("DELETE FROM libs WHERE name=?", (alias,))
+            con_a.commit()
+            con_a.close()
+        except Exception:
+            pass
+
     (lib_data_dir() / name).write_bytes(data)
     md5 = _hl.md5(data).hexdigest()
     size = len(data)
@@ -1190,13 +1239,27 @@ def lib_save(name: str, data: bytes, version: str = "", note: str = "") -> dict:
            VALUES(?,?,?,?,1,?,?)
            ON CONFLICT(name) DO UPDATE SET
              version=excluded.version, size=excluded.size, md5=excluded.md5,
-             note=excluded.note""",
+             note=excluded.note, enabled=1""",
         (name, version, size, md5, note, now),
     )
     con.commit()
     con.close()
     audit("owner", "lib.upload", name)
-    return {"name": name, "version": version, "size": size, "md5": md5, "enabled": 1, "note": note}
+    try:
+        from crownauth.persist import schedule_backup
+
+        schedule_backup()
+    except Exception:
+        pass
+    return {
+        "name": name,
+        "card": lib_card_name(name),
+        "version": version,
+        "size": size,
+        "md5": md5,
+        "enabled": 1,
+        "note": note,
+    }
 
 
 def lib_list(enabled_only: bool = False) -> list:
@@ -1204,35 +1267,189 @@ def lib_list(enabled_only: bool = False) -> list:
     q = "SELECT * FROM libs" + (" WHERE enabled=1" if enabled_only else "") + " ORDER BY name"
     rows = con.execute(q).fetchall()
     con.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["card"] = lib_card_name(d.get("name") or "")
+        d["cover"] = bool(lib_has_cover(d.get("name") or ""))
+        out.append(d)
+    return out
 
 
 def lib_get(name: str) -> dict | None:
+    """Exact name first, then STEM.so / libSTEM.so aliases (case-insensitive stem)."""
+    want = (name or "").strip()
+    if not want:
+        return None
     con = connect()
-    row = con.execute("SELECT * FROM libs WHERE name=?", (name,)).fetchone()
+    row = con.execute("SELECT * FROM libs WHERE name=?", (want,)).fetchone()
+    if row:
+        con.close()
+        d = dict(row)
+        d["card"] = lib_card_name(d.get("name") or "")
+        return d
+    try:
+        canon = lib_normalize_name(want)
+    except ValueError:
+        con.close()
+        return None
+    stem = canon[:-3]
+    candidates = (
+        canon,
+        f"lib{stem}.so",
+        f"lib{stem.lower()}.so",
+        f"{stem.lower()}.so",
+        stem,
+        f"lib{stem}",
+    )
+    for c in candidates:
+        row = con.execute("SELECT * FROM libs WHERE name=?", (c,)).fetchone()
+        if row:
+            con.close()
+            d = dict(row)
+            d["card"] = lib_card_name(d.get("name") or "")
+            return d
+    # last resort: any row whose normalized stem matches
+    for r in con.execute("SELECT * FROM libs").fetchall():
+        d = dict(r)
+        try:
+            if lib_normalize_name(d.get("name") or "") == canon:
+                con.close()
+                d["card"] = lib_card_name(d.get("name") or "")
+                return d
+        except ValueError:
+            continue
     con.close()
-    return dict(row) if row else None
+    return None
 
 
 def lib_set_enabled(name: str, enabled: bool) -> None:
+    row = lib_get(name)
+    key = (row or {}).get("name") or (name or "").strip()
     con = connect()
-    con.execute("UPDATE libs SET enabled=? WHERE name=?", (1 if enabled else 0, name))
+    con.execute("UPDATE libs SET enabled=? WHERE name=?", (1 if enabled else 0, key))
     con.commit()
     con.close()
-    audit("owner", "lib.toggle", "%s=%s" % (name, enabled))
+    audit("owner", "lib.toggle", "%s=%s" % (key, enabled))
+    try:
+        from crownauth.persist import schedule_backup
+
+        # force: disabled flag must survive dyno recycle / restore
+        schedule_backup(force=True)
+    except Exception:
+        pass
+
+
+def lib_cover_path(name: str):
+    """DATA/libs/STEM.cover.jpg"""
+    stem = lib_card_name(name)
+    return lib_data_dir() / (stem + ".cover.jpg")
+
+
+def lib_has_cover(name: str) -> bool:
+    try:
+        return lib_cover_path(name).is_file()
+    except Exception:
+        return False
+
+
+# Deck card is ~280×554 (9:16). Stored covers are center-cropped to this.
+COVER_W = 720
+COVER_H = 1280
+
+
+def _cover_bytes(data: bytes) -> bytes:
+    """Accept jpg/png/webp; crop-resize to 720×1280 JPEG when Pillow is present."""
+    if not data or len(data) < 32 or len(data) > 4 * 1024 * 1024:
+        raise ValueError("cover must be an image under 4 MB")
+    head = data[:8]
+    if not (head.startswith(b"\xff\xd8") or head.startswith(b"\x89PNG") or head.startswith(b"RIFF")):
+        raise ValueError("cover must be jpg, png, or webp")
+    try:
+        from io import BytesIO
+        from PIL import Image
+
+        im = Image.open(BytesIO(data))
+        im = im.convert("RGB")
+        sw, sh = im.size
+        if sw < 8 or sh < 8:
+            raise ValueError("cover image is too small")
+        scale = max(COVER_W / float(sw), COVER_H / float(sh))
+        nw = max(COVER_W, int(sw * scale + 0.5))
+        nh = max(COVER_H, int(sh * scale + 0.5))
+        im = im.resize((nw, nh), Image.Resampling.LANCZOS)
+        left = max(0, (nw - COVER_W) // 2)
+        top = max(0, int((nh - COVER_H) * 0.28))
+        if top + COVER_H > nh:
+            top = max(0, nh - COVER_H)
+        im = im.crop((left, top, left + COVER_W, top + COVER_H))
+        buf = BytesIO()
+        im.save(buf, format="JPEG", quality=86, optimize=True)
+        return buf.getvalue()
+    except ValueError:
+        raise
+    except Exception:
+        return data
+
+
+def lib_save_cover(name: str, data: bytes) -> dict:
+    out = _cover_bytes(data)
+    path = lib_cover_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(out)
+    try:
+        from crownauth.persist import schedule_backup
+
+        schedule_backup()
+    except Exception:
+        pass
+    return {"ok": True, "name": lib_card_name(name), "size": len(out), "cover": True}
 
 
 def lib_delete(name: str) -> None:
+    row = lib_get(name)
+    key = (row or {}).get("name") or (name or "").strip()
+    stem = lib_card_name(key)
     con = connect()
-    con.execute("DELETE FROM libs WHERE name=?", (name,))
+    con.execute("DELETE FROM libs WHERE name=?", (key,))
+    # also purge alias rows for same stem
+    for alias in (f"lib{stem}.so", f"{stem}.so", f"lib{stem.lower()}.so", f"{stem.lower()}.so"):
+        con.execute("DELETE FROM libs WHERE name=?", (alias,))
     con.commit()
     con.close()
+    for fname in (key, f"lib{stem}.so", f"{stem}.so", f"lib{stem.lower()}.so", f"{stem.lower()}.so", f"{stem}.cover.jpg"):
+        try:
+            (lib_data_dir() / fname).unlink(missing_ok=True)
+        except Exception:
+            pass
+    audit("owner", "lib.delete", key)
     try:
-        (lib_data_dir() / name).unlink(missing_ok=True)
+        from crownauth.persist import schedule_backup
+
+        # force: must push DB-without-row before recycle restores stale snapshot
+        schedule_backup(force=True)
     except Exception:
         pass
-    audit("owner", "lib.delete", name)
 
 
 def lib_data_path(name: str) -> Path:
-    return lib_data_dir() / name
+    """Path for a row name or any alias; prefers existing file for the stem."""
+    want = (name or "").strip()
+    if not want:
+        return lib_data_dir() / "_"
+    direct = lib_data_dir() / want
+    if direct.is_file():
+        return direct
+    try:
+        canon = lib_normalize_name(want)
+    except ValueError:
+        return direct
+    stem = canon[:-3]
+    for cand in (canon, f"lib{stem}.so", f"{stem.lower()}.so", f"lib{stem.lower()}.so"):
+        p = lib_data_dir() / cand
+        if p.is_file():
+            return p
+    row = lib_get(want)
+    if row and row.get("name"):
+        return lib_data_dir() / str(row["name"])
+    return lib_data_dir() / canon
