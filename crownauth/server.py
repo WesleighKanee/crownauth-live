@@ -775,15 +775,10 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 return self._send(404, b"Not Found", "text/plain")
             return self._json({"ok": True, "k": public_raw_bytes(PUB).hex()})
 
-        # mod library manifest — SESSION REQUIRED (no anonymous snatch)
-        # Client parser (JsBridge.syncCloud): JSONObject libs[] → name + md5.
-        # downloadLib uses name as URL path segment; libName() → card STEM.
-        # Canonical name is STEM.so (ALL-CAPS). card/enabled are extras for tools.
+        # mod library manifest — public read of ENABLED mods only.
+        # Session lock broke the APK sync (401 → keep old shelf → delete never applied).
+        # Owner upload/delete stays on /api/libs*.
         if path == cpre + "/libs":
-            ok_s, smsg, claims = _session_claims_from_headers(self)
-            if not ok_s:
-                db.audit("client", "libs.denied", smsg)
-                return self._json({"ok": False, "error": "Access denied", "action": "reauth"}, 401)
             host = str(db.get_setting("client_api_host") or "").strip()
             scheme = str(db.get_setting("client_api_scheme") or "https").strip()
             base = "%s://%s" % (scheme, host) if host else ""
@@ -806,9 +801,8 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                         ("%s/libs/%s/cover" % (cpre, card)) if has_cover else ""
                     ),
                 })
-            db.audit("client", "libs.list", "serial=%s n=%d" % (getattr(claims, "serial", "?"), len(libs)))
             return self._json({"ok": True, "libs": libs})
-        # mod library download — SESSION REQUIRED for .so; covers stay public (art only)
+        # mod library download — enabled .so public (same as the working sync). covers public.
         if path.startswith(cpre + "/libs/"):
             name = urllib.parse.unquote(path[len(cpre) + len("/libs/"):]).strip("/")
             if name.lower().endswith("/cover") or name.lower().endswith(".cover.jpg"):
@@ -834,22 +828,15 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 self.end_headers()
                 self.wfile.write(data)
                 return
-            ok_s, smsg, claims = _session_claims_from_headers(self)
-            if not ok_s:
-                db.audit("client", "libs.dl_denied", "%s %s" % (name, smsg))
-                return self._json({"ok": False, "error": "Access denied", "action": "reauth"}, 401)
             lib = db.lib_get(name)
             if not lib or not lib.get("enabled"):
                 return self._send(404, b"not found", "text/plain")
-            # Prefer DB row path (canonical file), not the URL alias string
             fp = db.lib_data_path(lib.get("name") or name)
             if not fp.is_file():
                 return self._send(404, b"not found", "text/plain")
             with open(fp, "rb") as f:
                 data = f.read()
             out_name = lib.get("name") or name
-            db.audit("client", "libs.dl", "serial=%s name=%s bytes=%d" % (
-                getattr(claims, "serial", "?"), out_name, len(data)))
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", "application/octet-stream")
