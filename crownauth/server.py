@@ -801,7 +801,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                         ("%s/libs/%s/cover" % (cpre, card)) if has_cover else ""
                     ),
                 })
-            return self._json({"ok": True, "libs": libs})
+            return self._json({"ok": True, "feed": "public", "libs": libs})
         # mod library download — enabled .so public (same as the working sync). covers public.
         if path.startswith(cpre + "/libs/"):
             name = urllib.parse.unquote(path[len(cpre) + len("/libs/"):]).strip("/")
