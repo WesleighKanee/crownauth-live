@@ -322,6 +322,37 @@ def client_auth(body: dict, ip: str) -> dict:
     }
 
 
+def _session_claims_from_headers(handler: "Handler") -> tuple[bool, str, Any]:
+    """Validate client session from Authorization Bearer / X-Crown-Session / X-Session."""
+    session = ""
+    auth = handler.headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        session = auth[7:].strip()
+    if not session:
+        session = (handler.headers.get("X-Crown-Session") or handler.headers.get("X-Session") or "").strip()
+    if not session:
+        # query fallback for stubborn clients
+        q = urllib.parse.urlparse(handler.path).query
+        qs = urllib.parse.parse_qs(q)
+        session = (qs.get("session") or qs.get("s") or [""])[0].strip()
+    if not session or len(session) < 10:
+        return False, "session required", None
+    hwid = (handler.headers.get("X-HWID") or "").strip()
+    hh = hwid_hash(hwid) if hwid else None
+    ok, msg, claims = verify_session(PUB, session, expect_hwid_hash=hh if hwid else None)
+    if not ok or not claims:
+        return False, "invalid session", None
+    if db.is_session_revoked(claims.jti):
+        return False, "revoked session", None
+    lic = db.get_license(int(claims.serial))
+    if not lic or lic.get("status") != "active":
+        return False, "license inactive", None
+    exp = int(lic.get("expires_at") or 0)
+    if exp > 0 and int(time.time()) > exp:
+        return False, "license expired", None
+    return True, "ok", claims
+
+
 def client_heartbeat(body: dict, ip: str) -> dict:
     s = db.all_settings()
     if s.get("kill_switch"):
@@ -744,11 +775,15 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 return self._send(404, b"Not Found", "text/plain")
             return self._json({"ok": True, "k": public_raw_bytes(PUB).hex()})
 
-        # mod library manifest (public, read-only) — app fetches this
+        # mod library manifest — SESSION REQUIRED (no anonymous snatch)
         # Client parser (JsBridge.syncCloud): JSONObject libs[] → name + md5.
         # downloadLib uses name as URL path segment; libName() → card STEM.
         # Canonical name is STEM.so (ALL-CAPS). card/enabled are extras for tools.
         if path == cpre + "/libs":
+            ok_s, smsg, claims = _session_claims_from_headers(self)
+            if not ok_s:
+                db.audit("client", "libs.denied", smsg)
+                return self._json({"ok": False, "error": "Access denied", "action": "reauth"}, 401)
             host = str(db.get_setting("client_api_host") or "").strip()
             scheme = str(db.get_setting("client_api_scheme") or "https").strip()
             base = "%s://%s" % (scheme, host) if host else ""
@@ -771,8 +806,9 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                         ("%s/libs/%s/cover" % (cpre, card)) if has_cover else ""
                     ),
                 })
+            db.audit("client", "libs.list", "serial=%s n=%d" % (getattr(claims, "serial", "?"), len(libs)))
             return self._json({"ok": True, "libs": libs})
-        # mod library download (public, enabled only) — STEM.so / libSTEM.so / STEM
+        # mod library download — SESSION REQUIRED for .so; covers stay public (art only)
         if path.startswith(cpre + "/libs/"):
             name = urllib.parse.unquote(path[len(cpre) + len("/libs/"):]).strip("/")
             if name.lower().endswith("/cover") or name.lower().endswith(".cover.jpg"):
@@ -798,6 +834,10 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 self.end_headers()
                 self.wfile.write(data)
                 return
+            ok_s, smsg, claims = _session_claims_from_headers(self)
+            if not ok_s:
+                db.audit("client", "libs.dl_denied", "%s %s" % (name, smsg))
+                return self._json({"ok": False, "error": "Access denied", "action": "reauth"}, 401)
             lib = db.lib_get(name)
             if not lib or not lib.get("enabled"):
                 return self._send(404, b"not found", "text/plain")
@@ -808,13 +848,15 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
             with open(fp, "rb") as f:
                 data = f.read()
             out_name = lib.get("name") or name
+            db.audit("client", "libs.dl", "serial=%s name=%s bytes=%d" % (
+                getattr(claims, "serial", "?"), out_name, len(data)))
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Content-Disposition", 'attachment; filename="%s"' % out_name)
             self.send_header("ETag", '"%s"' % (lib.get("md5") or ""))
-            self.send_header("Cache-Control", "public, max-age=60")
+            self.send_header("Cache-Control", "no-store, private")
             self.end_headers()
             self.wfile.write(data)
             return
