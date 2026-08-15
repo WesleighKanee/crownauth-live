@@ -24,7 +24,8 @@ def main() -> None:
     pub = (os.environ.get("PUBLIC_HOST") or "").strip().lower()
     pub = pub.replace("https://", "").replace("http://", "").split("/")[0]
 
-    # Free tier: restore DB+secrets+libs from GitHub before init (if wipe happened)
+    # Free tier: restore DB + secrets from GitHub before init (if wiped).
+    # Large library binaries remain in dedicated GitHub Release assets.
     try:
         from crownauth.persist import restore_if_needed
 
@@ -34,7 +35,7 @@ def main() -> None:
         print(f"persist restore skip: {e}")
 
     db.init_db()
-    # Second pass: DB may have lib rows after init while DATA/libs is still empty.
+    # Backward-compatible no-op after the Release-CDN migration.
     try:
         from crownauth.persist import heal_missing_libs
 

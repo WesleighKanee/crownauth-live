@@ -470,12 +470,7 @@ def restore_if_needed() -> tuple[bool, str]:
             except Exception:
                 pass
             if not need:
-                if _libs_missing():
-                    # DB is healthy — pull binaries only, do not roll back newer keys
-                    need = True
-                    libs_only = True
-                else:
-                    return False, "local data present"
+                return False, "local control-plane data present"
     try:
         file_text = _github_get_backup_text(token, repo)
         counts = _apply_tar_b64(file_text, libs_only=libs_only)
@@ -492,31 +487,8 @@ def restore_if_needed() -> tuple[bool, str]:
 
 
 def heal_missing_libs() -> tuple[bool, str]:
-    """After init_db: DB has lib rows but DATA/libs files are gone → GitHub libs_only.
-
-    Call this on boot AFTER db.init_db() and BEFORE the HTTP server accepts traffic.
-    restore_if_needed() may have already pulled a full snapshot; this is the
-    second pass for the wipe case where the DB survived and binaries did not.
-    """
-    if not _libs_missing():
-        return False, "libs present"
-    token = _env("GITHUB_TOKEN")
-    repo = _env("GITHUB_BACKUP_REPO")
-    if not token or not repo:
-        return False, "no backup config"
-    try:
-        file_text = _github_get_backup_text(token, repo)
-        counts = _apply_tar_b64(file_text, libs_only=True)
-        n = int(counts.get("libs") or 0)
-        if _libs_missing():
-            return False, f"heal extracted {n} lib files but some still missing"
-        return True, f"healed {n} lib files from GitHub backup"
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return False, "no backup yet"
-        return False, f"heal failed: {e.code}"
-    except Exception as e:
-        return False, f"heal failed: {e}"
+    """Backward-compatible no-op; binaries now live in Release assets."""
+    return False, "library binaries managed by GitHub Releases CDN"
 
 
 maybe_restore = restore_if_needed
@@ -525,7 +497,7 @@ maybe_restore = restore_if_needed
 def schedule_backup(force: bool = False) -> None:
     """Fire-and-forget backup after mutations.
 
-    force=True: bypass 20s rate limit and empty-license / missing-lib guards.
+    force=True: bypass 20s rate limit and empty-license guards.
     Required after lib delete/toggle so free-tier recycle cannot resurrect a
     removed or disabled mod from a stale GitHub snapshot.
     """
