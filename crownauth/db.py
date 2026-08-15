@@ -1402,6 +1402,26 @@ def lib_save_cover(name: str, data: bytes) -> dict:
     return {"ok": True, "name": lib_card_name(name), "size": len(out), "cover": True}
 
 
+def lib_remove_cover(name: str) -> dict:
+    """Delete the cover file for a lib (if present). Returns removed: bool."""
+    path = lib_cover_path(name)
+    removed = False
+    try:
+        if path.is_file():
+            path.unlink()
+            removed = True
+    except Exception:
+        pass
+    if removed:
+        try:
+            from crownauth.persist import schedule_backup
+
+            schedule_backup()
+        except Exception:
+            pass
+    return {"ok": True, "name": lib_card_name(name), "cover": False, "removed": removed}
+
+
 def lib_delete(name: str) -> None:
     row = lib_get(name)
     key = (row or {}).get("name") or (name or "").strip()

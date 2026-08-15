@@ -4,7 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Reseller — WhiteCrown</title>
-  <link rel="stylesheet" href="/static/css/panel.css?v=vision2" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <!-- Fonts load async (media=print trick): local CSS paints instantly, fonts swap in when ready.
+       If the font CDN is unreachable, the panel still renders fully styled. -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" media="print" onload="this.media='all'" />
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" /></noscript>
+  <link rel="stylesheet" href="/static/css/panel.css?v=ethereal5" />
   <style>
     .wrap { max-width: 720px; margin: 0 auto; padding: 28px 16px 48px; }
     .hero { margin-bottom: 20px; }
@@ -84,6 +90,7 @@
     </div>
   </div>
   <div class="toast" id="toast"></div>
-  <script src="/static/js/reseller.js"></script>
+  <script src="/static/js/appearance.js?v=ethereal5"></script>
+  <script src="/static/js/reseller.js?v=ethereal5"></script>
 </body>
 </html>

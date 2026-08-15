@@ -663,7 +663,8 @@ function fillBrand() {
   $("#bScheme").value = s.client_api_scheme || "http";
   $("#bClientPort").value = s.client_api_port ?? 8787;
   $("#bNote").value = s.seller_note || "";
-  document.documentElement.style.setProperty("--accent", s.theme_accent || "#d4af37");
+  // App accent is deployed to clients; panel appearance is intentionally local per device.
+  if (window.PanelAppearance) window.PanelAppearance.apply();
   const host = s.client_api_host || "127.0.0.1";
   const scheme = s.client_api_scheme || "http";
   const cport = Number(s.client_api_port ?? 8787);
@@ -1101,6 +1102,57 @@ trySession();
 
 
 // ---------------- Library (mod feed) ----------------
+const EMBEDDED_CARDS = ["AURASIA", "AUREXIA", "AURYNXIA", "AUVEXIA"];
+
+function renderEmbeddedCovers() {
+  const grid = $("#embeddedCoverGrid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  const revision = Date.now();
+  EMBEDDED_CARDS.forEach((name) => {
+    const card = document.createElement("article");
+    card.className = "managed-cover";
+    const visual = document.createElement("div");
+    visual.className = "managed-cover-visual";
+    const fallback = document.createElement("span");
+    fallback.className = "managed-cover-fallback";
+    fallback.textContent = name;
+    const image = document.createElement("img");
+    image.alt = name + " deck cover";
+    image.loading = "lazy";
+    image.src = "/v2/libs/" + encodeURIComponent(name) + "/cover?t=" + revision;
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "btn ghost";
+    removeBtn.hidden = true;
+    removeBtn.textContent = "Remove cover";
+    removeBtn.onclick = async () => {
+      if (!confirm("Remove cover for " + name + "?")) return;
+      try {
+        await removeCover(name);
+        await refreshLibs();
+      } catch (e) {
+        $("#libsOut").textContent = "Cover remove failed: " + e.message;
+      }
+    };
+    image.addEventListener("error", () => image.classList.add("is-missing"), { once: true });
+    image.addEventListener("load", () => { removeBtn.hidden = false; }, { once: true });
+    visual.append(fallback, image);
+    const meta = document.createElement("div");
+    meta.className = "managed-cover-meta";
+    const title = document.createElement("b");
+    title.textContent = name;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn ghost";
+    button.textContent = "Replace cover";
+    button.onclick = () => pickCoverFor(name);
+    meta.append(title, button, removeBtn);
+    card.append(visual, meta);
+    grid.appendChild(card);
+  });
+}
+
 function fmtSize(n) {
   if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
   if (n >= 1024) return (n / 1024).toFixed(0) + " KB";
@@ -1118,6 +1170,18 @@ async function uploadCover(name, file, outEl) {
   const j = await res.json();
   if (!j.ok) throw new Error(j.error || "cover failed");
   if (outEl) outEl.textContent = "Cover set for " + stem + " — deck picks it up on next SYNC.";
+  return j;
+}
+
+async function removeCover(name) {
+  const stem = normalizeLibName(name).replace(/\.so$/i, "");
+  if (!stem) throw new Error("name required");
+  const res = await fetch(
+    "/api/libs/cover/delete?name=" + encodeURIComponent(stem),
+    { method: "POST", headers: { Authorization: "Bearer " + state.session } }
+  );
+  const j = await res.json();
+  if (!j.ok) throw new Error(j.error || "cover remove failed");
   return j;
 }
 
@@ -1140,6 +1204,7 @@ function pickCoverFor(name) {
 }
 
 async function refreshLibs() {
+  renderEmbeddedCovers();
   const d = await api("/api/libs");
   const tb = $("#libsBody");
   tb.innerHTML = "";
@@ -1163,6 +1228,7 @@ async function refreshLibs() {
       '<td data-label="On">' + (L.enabled ? "✅" : "⛔") + "</td>" +
       '<td class="actions">' +
       '<button class="btn ghost" data-act="cover" data-name="' + esc(L.name) + '">Cover</button> ' +
+      (L.cover ? '<button class="btn ghost" data-act="delcover" data-name="' + esc(L.name) + '">Remove cover</button> ' : "") +
       '<button class="btn ghost" data-act="toggle" data-name="' + esc(L.name) + '">' +
       (L.enabled ? "Disable" : "Enable") + "</button> " +
       '<button class="btn ghost" data-act="del" data-name="' + esc(L.name) + '">Delete</button></td>';
@@ -1173,6 +1239,12 @@ async function refreshLibs() {
       const name = b.dataset.name;
       if (b.dataset.act === "cover") {
         pickCoverFor(name);
+        return;
+      }
+      if (b.dataset.act === "delcover") {
+        if (!confirm("Remove cover for " + name + "?")) return;
+        await removeCover(name);
+        await refreshLibs();
         return;
       }
       if (b.dataset.act === "del") {

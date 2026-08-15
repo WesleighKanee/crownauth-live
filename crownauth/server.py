@@ -1174,6 +1174,20 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     return self._json({"ok": False, "error": "cover save failed: %s" % e}, 400)
                 return self._json({"ok": True, "cover": out})
 
+            if path == "/api/libs/cover/delete":
+                _qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                name = (_qs.get("name") or [""])[0].strip()
+                if not name:
+                    return self._json({"ok": False, "error": "name required"}, 400)
+                try:
+                    stem = db.lib_card_name(name)
+                    if not stem:
+                        return self._json({"ok": False, "error": "bad name"}, 400)
+                    out = db.lib_remove_cover(stem)
+                except Exception as e:
+                    return self._json({"ok": False, "error": "cover remove failed: %s" % e}, 400)
+                return self._json(out)
+
             if path == "/api/libs/upload":
                 _qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 name = (_qs.get("name") or [""])[0].strip()

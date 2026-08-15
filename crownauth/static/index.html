@@ -6,7 +6,13 @@
   <meta name="robots" content="noindex,nofollow,noarchive" />
   <meta name="referrer" content="no-referrer" />
   <title>Console</title>
-  <link rel="stylesheet" href="/static/css/panel.css?v=vision3" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <!-- Fonts load async (media=print trick): local CSS paints instantly, fonts swap in when ready.
+       If the font CDN is unreachable, the panel still renders fully styled. -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" media="print" onload="this.media='all'" />
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" /></noscript>
+  <link rel="stylesheet" href="/static/css/panel.css?v=ethereal5" />
 </head>
 <body>
   <!-- Owner login — simple Meta-style gate -->
@@ -408,6 +414,16 @@
       </section>
 
       <section id="view-libs" class="view hidden">
+        <div class="card embedded-cover-card">
+          <div class="section-heading">
+            <div>
+              <h3>Embedded deck covers</h3>
+              <p class="help">Change the four built-in card photos from here. The loader refreshes these after <b>Sync Library</b> and keeps APK artwork as its offline fallback.</p>
+            </div>
+            <span class="pill live">Panel managed</span>
+          </div>
+          <div id="embeddedCoverGrid" class="cover-manager-grid" aria-live="polite"></div>
+        </div>
         <div class="grid two">
           <div class="card">
             <h3>Mod library <span class="pill" style="font-size:11px;margin-left:6px">served to the app</span></h3>
@@ -489,6 +505,7 @@
     </main>
   </div>
   <div class="toast" id="toast"></div>
-  <script src="/static/js/panel.js"></script>
+  <script src="/static/js/appearance.js?v=ethereal5"></script>
+  <script src="/static/js/panel.js?v=ethereal5"></script>
 </body>
 </html>
