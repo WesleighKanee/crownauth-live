@@ -803,6 +803,16 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     url = "%s%s/libs/%s" % (base, cpre, nm) if base else "%s/libs/%s" % (cpre, nm)
                 card = r.get("card") or db.lib_card_name(nm)
                 has_cover = bool(r.get("cover") or db.lib_has_cover(nm))
+                if has_cover and db.lib_cdn_only():
+                    from crownauth.lib_cdn import cover_url as cdn_cover_url
+
+                    cover_url = cdn_cover_url(card)
+                elif has_cover and base:
+                    cover_url = "%s%s/libs/%s/cover" % (base, cpre, card)
+                elif has_cover:
+                    cover_url = "%s/libs/%s/cover" % (cpre, card)
+                else:
+                    cover_url = ""
                 libs.append({
                     "name": nm,
                     "card": card,
@@ -812,9 +822,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "enabled": True,
                     "url": url,
                     "cover": has_cover,
-                    "cover_url": ("%s%s/libs/%s/cover" % (base, cpre, card)) if has_cover and base else (
-                        ("%s/libs/%s/cover" % (cpre, card)) if has_cover else ""
-                    ),
+                    "cover_url": cover_url,
                 })
             return self._json({"ok": True, "feed": "public", "libs": libs})
         # mod library download — enabled .so public (same as the working sync). covers public.
@@ -826,6 +834,19 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     stem = stem[: -len("/cover")]
                 elif stem.lower().endswith(".cover.jpg"):
                     stem = stem[: -len(".cover.jpg")]
+                if db.lib_cdn_only():
+                    from crownauth.lib_cdn import cover_url as cdn_cover_url
+
+                    if not db.lib_has_cover(stem):
+                        return self._send(404, b"no cover", "text/plain")
+                    location = cdn_cover_url(db.lib_card_name(stem))
+                    self.send_response(302)
+                    self._cors()
+                    self.send_header("Location", location)
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Cache-Control", "public, max-age=300")
+                    self.end_headers()
+                    return
                 fp = db.lib_cover_path(stem)
                 if not fp.is_file():
                     return self._send(404, b"no cover", "text/plain")
@@ -1245,6 +1266,9 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 try:
                     from crownauth.lib_cdn import remove as remove_lib
                     cdn_removed = remove_lib(key)
+                    if db.lib_cdn_only():
+                        from crownauth.lib_cdn import remove as remove_cover_asset
+                        remove_cover_asset(db.lib_card_name(key) + ".cover.jpg")
                 except Exception as e:
                     cdn_warning = str(e)
                 try:

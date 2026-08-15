@@ -143,3 +143,11 @@ def remove(name: str) -> bool:
         return False
     _delete_asset(int(asset["id"]))
     return True
+
+
+def cover_url(card: str) -> str:
+    """Public GitHub CDN URL for a cover asset: <CARD>.cover.jpg"""
+    return (
+        f"https://github.com/{repo_name()}/releases/download/"
+        f"{urllib.parse.quote(release_tag())}/{urllib.parse.quote(card + '.cover.jpg')}"
+    )

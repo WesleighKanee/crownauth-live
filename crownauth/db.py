@@ -209,7 +209,8 @@ def init_db() -> None:
             md5 TEXT DEFAULT '',
             enabled INTEGER NOT NULL DEFAULT 1,
             note TEXT DEFAULT '',
-            created_at INTEGER NOT NULL DEFAULT 0
+            created_at INTEGER NOT NULL DEFAULT 0,
+            has_cover INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS resellers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -235,6 +236,7 @@ def init_db() -> None:
         ("start_mode", "ALTER TABLE licenses ADD COLUMN start_mode TEXT DEFAULT 'first_use'"),
         ("reseller", "ALTER TABLE licenses ADD COLUMN reseller TEXT DEFAULT ''"),
         ("prefix_tag", "ALTER TABLE licenses ADD COLUMN prefix_tag TEXT DEFAULT ''"),
+        ("has_cover", "ALTER TABLE libs ADD COLUMN has_cover INTEGER NOT NULL DEFAULT 0"),
     ):
         try:
             cur.execute(ddl)
@@ -1175,6 +1177,15 @@ def lib_data_dir() -> Path:
     return d
 
 
+def lib_cdn_only() -> bool:
+    """True = binaries/covers live only on the GitHub release, never on disk.
+
+    Keeps small free hosts (Alwaysdata 100 MB, Render, etc.) flat: the server
+    stores only the DB row (name/md5/size) while GitHub serves the bytes.
+    """
+    return (os.environ.get("LIBS_CDN_ONLY") or "").strip() == "1"
+
+
 def lib_normalize_name(name: str) -> str:
     """STEM.so uppercase. Accepts OWLHAX / OWLHAX.so / libOWLHAX.so / libowlhax."""
     raw = (name or "").strip().replace("\\", "/")
@@ -1229,7 +1240,7 @@ def lib_save(name: str, data: bytes, version: str = "", note: str = "") -> dict:
         except Exception:
             pass
 
-    (lib_data_dir() / name).write_bytes(data)
+    (lib_data_dir() / name).write_bytes(data) if not lib_cdn_only() else None
     md5 = _hl.md5(data).hexdigest()
     size = len(data)
     now = int(time.time())
@@ -1348,6 +1359,11 @@ def lib_cover_path(name: str):
 
 def lib_has_cover(name: str) -> bool:
     try:
+        if lib_cdn_only():
+            con = connect()
+            row = con.execute("SELECT has_cover FROM libs WHERE name=?", (lib_normalize_name(name),)).fetchone()
+            con.close()
+            return bool(row and row[0])
         return lib_cover_path(name).is_file()
     except Exception:
         return False
@@ -1390,26 +1406,53 @@ def _cover_bytes(data: bytes) -> bytes:
 
 def lib_save_cover(name: str, data: bytes) -> dict:
     out = _cover_bytes(data)
-    path = lib_cover_path(name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(out)
+    stem = lib_card_name(name)
+    if lib_cdn_only():
+        from crownauth.lib_cdn import publish as publish_cover
+
+        publish_cover(stem + ".cover.jpg", out)
+    else:
+        path = lib_cover_path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(out)
+    con = connect()
+    con.execute("UPDATE libs SET has_cover=1 WHERE name=?", (lib_normalize_name(name),))
+    con.commit()
+    con.close()
     try:
         from crownauth.persist import schedule_backup
 
         schedule_backup()
     except Exception:
         pass
-    return {"ok": True, "name": lib_card_name(name), "size": len(out), "cover": True}
+    return {"ok": True, "name": stem, "size": len(out), "cover": True}
 
 
 def lib_remove_cover(name: str) -> dict:
-    """Delete the cover file for a lib (if present). Returns removed: bool."""
-    path = lib_cover_path(name)
+    """Delete the cover for a lib (local file and/or GitHub asset)."""
+    stem = lib_card_name(name)
     removed = False
+    if lib_cdn_only():
+        try:
+            from crownauth.lib_cdn import remove as remove_cover
+
+            if remove_cover(stem + ".cover.jpg"):
+                removed = True
+        except Exception:
+            pass
+    else:
+        path = lib_cover_path(name)
+        try:
+            if path.is_file():
+                path.unlink()
+                removed = True
+        except Exception:
+            pass
     try:
-        if path.is_file():
-            path.unlink()
-            removed = True
+        con = connect()
+        con.execute("UPDATE libs SET has_cover=0 WHERE name=?", (lib_normalize_name(name),))
+        con.commit()
+        con.close()
     except Exception:
         pass
     if removed:
@@ -1419,7 +1462,7 @@ def lib_remove_cover(name: str) -> dict:
             schedule_backup()
         except Exception:
             pass
-    return {"ok": True, "name": lib_card_name(name), "cover": False, "removed": removed}
+    return {"ok": True, "name": stem, "cover": False, "removed": removed}
 
 
 def lib_delete(name: str) -> None:
