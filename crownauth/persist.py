@@ -166,7 +166,7 @@ def _safe_arcname(name: str) -> Optional[str]:
     return "/".join(parts)
 
 
-def _tar_b64(include_libs: bool = True) -> str:
+def _tar_b64(include_libs: bool = False) -> str:
     import io
     import tarfile
 
@@ -331,22 +331,16 @@ def backup_now(force: bool = False, notify: bool = True) -> tuple[bool, str]:
             return False, "refused empty backup (0 licenses) — mint keys or force=True"
     except Exception:
         pass
-    # Same trap for mods: licenses can exist after a wipe while DATA/libs is empty.
-    # Boot schedule_backup() must not clobber a remote snapshot that still has the binaries.
-    if not force and _libs_missing():
-        return False, "refused backup (lib files missing) — restore first or force=True"
+    # Library binaries live in GitHub Release assets. Render's local copies are
+    # disposable cache and intentionally do not gate control-plane backups.
     now = time.time()
     with _lock:
         if not force and (now - _last_backup) < _MIN_BACKUP_GAP:
             return True, "skipped (rate limit)"
         try:
             stats = _lib_pack_stats()
-            include_libs = True
-            blob = _tar_b64(True)
-            # Stored object is already b64 text; API wraps again. Cap at _GH_BLOB_BUDGET.
-            if len(blob) > _GH_BLOB_BUDGET:
-                include_libs = False
-                blob = _tar_b64(False)
+            include_libs = False
+            blob = _tar_b64(False)
             api = f"https://api.github.com/repos/{repo}/contents/crownauth-backup.tar.gz.b64"
             headers = {
                 "Authorization": f"Bearer {token}",
@@ -396,7 +390,7 @@ def backup_now(force: bool = False, notify: bool = True) -> tuple[bool, str]:
                     int((stats.get("bytes") or 0) / (1024 * 1024)),
                 )
             else:
-                msg = "backup ok (libs OMITTED — over GitHub cap; re-upload after recycle)"
+                msg = "backup ok (library binaries on GitHub Releases CDN)"
                 if notify:
                     try:
                         from crownauth import notify as _n

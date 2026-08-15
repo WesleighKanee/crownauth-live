@@ -49,7 +49,7 @@ STATIC = HERE / "static"
 CHALLENGES: dict[str, dict[str, Any]] = {}
 CHAL_LOCK = threading.Lock()
 PRIV, PUB = load_or_create_keypair()
-DEFAULT_LIB_CDN_BASE = "https://github.com/WesleighKanee/crownauth-live/releases/latest/download"
+DEFAULT_LIB_CDN_BASE = "https://github.com/WesleighKanee/crownauth-live/releases/download/library-cdn-v1"
 
 
 def json_bytes(obj: Any, code: int = 200) -> tuple[int, bytes, str]:
@@ -725,16 +725,23 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
         if path == cpre + "/health":
             s = db.all_settings()
             lib_rows = []
-            disk_ok = True
+            local_disk_ok = True
             try:
                 lib_rows = db.lib_list()
                 for r in lib_rows:
                     fp = db.lib_data_path(r.get("name") or "")
                     if not fp.is_file() or fp.stat().st_size <= 0:
-                        disk_ok = False
+                        local_disk_ok = False
                         break
             except Exception:
-                disk_ok = False
+                local_disk_ok = False
+            cdn_base = (os.environ.get("LIB_CDN_BASE") or DEFAULT_LIB_CDN_BASE).strip()
+            try:
+                from crownauth.lib_cdn import configured as lib_cdn_configured
+                cdn_write_configured = lib_cdn_configured()
+            except Exception:
+                cdn_write_configured = False
+            disk_ok = local_disk_ok or bool(cdn_base)
             return self._json(
                 {
                     "ok": True,
@@ -746,6 +753,9 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "min_vc": int(s.get("min_client_version_code") or 0),
                     "lib_count": len(lib_rows),
                     "disk_ok": disk_ok,
+                    "local_cache_ok": local_disk_ok,
+                    "cdn": bool(cdn_base),
+                    "cdn_write_configured": cdn_write_configured,
                 }
             )
         if path == cpre + "/version":
@@ -1175,12 +1185,24 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 try:
                     # normalize before save so panel + app share STEM.so
                     name = db.lib_normalize_name(name)
+                    from crownauth.lib_cdn import publish as publish_lib
+                    cdn_result = publish_lib(name, _raw_body)
                     lib = db.lib_save(name, _raw_body, version, note)
                 except ValueError as e:
                     return self._json({"ok": False, "error": str(e) or "bad name"}, 400)
                 except Exception as e:
-                    return self._json({"ok": False, "error": "save failed: %s" % e}, 400)
-                return self._json({"ok": True, "lib": lib, "card": lib.get("card") or db.lib_card_name(lib["name"])})
+                    return self._json({"ok": False, "error": "CDN publish failed; library was not changed: %s" % e}, 502)
+                try:
+                    from crownauth.persist import schedule_backup
+                    schedule_backup()
+                except Exception:
+                    pass
+                return self._json({
+                    "ok": True,
+                    "lib": lib,
+                    "cdn": cdn_result,
+                    "card": lib.get("card") or db.lib_card_name(lib["name"]),
+                })
 
             if path == "/api/libs/toggle":
                 name = (body.get("name") or "").strip()
@@ -1190,6 +1212,11 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 if not row:
                     return self._json({"ok": False, "error": "not found"}, 404)
                 db.lib_set_enabled(row["name"], bool(body.get("enabled")))
+                try:
+                    from crownauth.persist import schedule_backup
+                    schedule_backup()
+                except Exception:
+                    pass
                 return self._json({"ok": True, "name": row["name"], "enabled": bool(body.get("enabled"))})
 
             if path == "/api/libs/delete":
@@ -1199,7 +1226,24 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 row = db.lib_get(name)
                 key = (row or {}).get("name") or name
                 db.lib_delete(key)
-                return self._json({"ok": True, "name": key})
+                cdn_removed = False
+                cdn_warning = ""
+                try:
+                    from crownauth.lib_cdn import remove as remove_lib
+                    cdn_removed = remove_lib(key)
+                except Exception as e:
+                    cdn_warning = str(e)
+                try:
+                    from crownauth.persist import schedule_backup
+                    schedule_backup()
+                except Exception:
+                    pass
+                return self._json({
+                    "ok": True,
+                    "name": key,
+                    "cdn_removed": cdn_removed,
+                    "cdn_warning": cdn_warning,
+                })
 
             if path == "/api/settings":
                 # FOREVER lock — panel/scripts cannot re-enable buyer-breaking gates

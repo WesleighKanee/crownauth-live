@@ -26,5 +26,12 @@ services:
       # Upload objects using the exact panel names (for example OWLLIQUID.so).
       - key: LIB_CDN_BASE
         sync: false
+      - key: LIB_GITHUB_REPO
+        value: WesleighKanee/crownauth-live
+      - key: LIB_GITHUB_RELEASE_TAG
+        value: library-cdn-v1
+      # Optional dedicated token. Existing GITHUB_TOKEN is used as fallback.
+      - key: LIB_GITHUB_TOKEN
+        sync: false
       - key: PYTHONUNBUFFERED
         value: "1"
