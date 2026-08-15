@@ -22,5 +22,9 @@ services:
         value: /data
       - key: PUBLIC_HOST
         sync: false
+      # Optional Cloudflare R2/custom-domain base for large .so downloads.
+      # Upload objects using the exact panel names (for example OWLLIQUID.so).
+      - key: LIB_CDN_BASE
+        sync: false
       - key: PYTHONUNBUFFERED
         value: "1"

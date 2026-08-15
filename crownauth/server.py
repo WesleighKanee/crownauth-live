@@ -49,6 +49,7 @@ STATIC = HERE / "static"
 CHALLENGES: dict[str, dict[str, Any]] = {}
 CHAL_LOCK = threading.Lock()
 PRIV, PUB = load_or_create_keypair()
+DEFAULT_LIB_CDN_BASE = "https://github.com/WesleighKanee/crownauth-live/releases/latest/download"
 
 
 def json_bytes(obj: Any, code: int = 200) -> tuple[int, bytes, str]:
@@ -740,7 +741,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "m": 1 if s.get("maintenance") else 0,
                     "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
-                    "b": "panel_libs_v27",
+                    "b": "panel_libs_v28_github_cdn",
                     "min_proto": int(s.get("min_client_protocol") or 0),
                     "min_vc": int(s.get("min_client_version_code") or 0),
                     "lib_count": len(lib_rows),
@@ -785,7 +786,11 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
             libs = []
             for r in db.lib_list(enabled_only=True):
                 nm = r["name"]
-                url = "%s%s/libs/%s" % (base, cpre, nm) if base else "%s/libs/%s" % (cpre, nm)
+                cdn = (os.environ.get("LIB_CDN_BASE") or DEFAULT_LIB_CDN_BASE).strip().rstrip("/")
+                if cdn:
+                    url = "%s/%s?v=%s" % (cdn, urllib.parse.quote(nm), r.get("md5") or "0")
+                else:
+                    url = "%s%s/libs/%s" % (base, cpre, nm) if base else "%s/libs/%s" % (cpre, nm)
                 card = r.get("card") or db.lib_card_name(nm)
                 has_cover = bool(r.get("cover") or db.lib_has_cover(nm))
                 libs.append({
@@ -831,12 +836,26 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
             lib = db.lib_get(name)
             if not lib or not lib.get("enabled"):
                 return self._send(404, b"not found", "text/plain")
-            fp = db.lib_data_path(lib.get("name") or name)
+            out_name = lib.get("name") or name
+            # Optional zero-egress object-store handoff. The Android client follows
+            # this redirect, while auth, manifest, and owner controls remain here.
+            cdn = (os.environ.get("LIB_CDN_BASE") or DEFAULT_LIB_CDN_BASE).strip().rstrip("/")
+            if cdn:
+                location = "%s/%s?v=%s" % (
+                    cdn, urllib.parse.quote(out_name), lib.get("md5") or "0"
+                )
+                self.send_response(302)
+                self._cors()
+                self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "public, max-age=300")
+                self.end_headers()
+                return
+            fp = db.lib_data_path(out_name)
             if not fp.is_file():
                 return self._send(404, b"not found", "text/plain")
             with open(fp, "rb") as f:
                 data = f.read()
-            out_name = lib.get("name") or name
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", "application/octet-stream")
