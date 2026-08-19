@@ -3,7 +3,8 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
 const state = {
-  session: localStorage.getItem("oc_session") || "",
+  // Owner sessions are HttpOnly cookies; never persist bearer tokens in JS.
+  session: "",
   settings: {},
   licenses: [],
   plans: [],
@@ -31,7 +32,6 @@ async function downloadCsvExport() {
   const q = encodeURIComponent($("#keySearch")?.value || "");
   const st = encodeURIComponent($("#keyStatus")?.value || "");
   const headers = {};
-  if (state.session) headers["Authorization"] = "Bearer " + state.session;
   const res = await fetch(`/api/licenses/export.csv?q=${q}&status=${st}`, {
     headers,
     credentials: "same-origin",
@@ -52,7 +52,6 @@ async function api(path, opts = {}) {
     "Content-Type": "application/json",
     ...(opts.headers || {}),
   };
-  if (state.session) headers["Authorization"] = "Bearer " + state.session;
   const res = await fetch(path, { ...opts, headers, credentials: "same-origin" });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) {
@@ -124,7 +123,6 @@ function showApp(on) {
 
 function logout(call = true) {
   state.session = "";
-  localStorage.removeItem("oc_session");
   if (call) fetch("/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
   showApp(false);
 }
@@ -160,16 +158,15 @@ async function trySession() {
     }
 
     // Already signed in?
-    if (st.authed || state.session) {
+    if (st.authed) {
       try {
-        if (state.session) await api("/api/dashboard");
+        await api("/api/dashboard");
         showApp(true);
         setView("dash");
         return;
       } catch (_) {
         // bad/expired session — fall through to login form
         state.session = "";
-        localStorage.removeItem("oc_session");
       }
     }
   } catch (_) {
@@ -194,6 +191,7 @@ function setView(name) {
     audit: ["Activity", "What you and the server did"],
     resellers: ["Resellers", "Limited accounts that only mint keys"],
     libs: ["Library", "Mods the app downloads automatically"],
+    experience: ["Experience", "Stage and publish Login + Library visuals"],
     brand: ["Settings", "Brand + deploy host for APK"],
   };
   const t = titles[name] || [name, ""];
@@ -745,8 +743,6 @@ function wire() {
         body: JSON.stringify({ password }),
       }).then((x) => x.json());
       if (!r.ok) throw new Error(r.error || "Wrong password");
-      state.session = r.session;
-      localStorage.setItem("oc_session", r.session);
       showApp(true);
       setView("dash");
       toast("Signed in");
@@ -1165,7 +1161,7 @@ async function uploadCover(name, file, outEl) {
   if (outEl) outEl.textContent = "Uploading cover for " + stem + " …";
   const res = await fetch(
     "/api/libs/cover?name=" + encodeURIComponent(stem),
-    { method: "POST", headers: { Authorization: "Bearer " + state.session }, body: file }
+    { method: "POST", body: file, credentials: "same-origin" }
   );
   const j = await res.json();
   if (!j.ok) throw new Error(j.error || "cover failed");
@@ -1178,7 +1174,7 @@ async function removeCover(name) {
   if (!stem) throw new Error("name required");
   const res = await fetch(
     "/api/libs/cover/delete?name=" + encodeURIComponent(stem),
-    { method: "POST", headers: { Authorization: "Bearer " + state.session } }
+        { method: "POST", credentials: "same-origin" }
   );
   const j = await res.json();
   if (!j.ok) throw new Error(j.error || "cover remove failed");
@@ -1297,7 +1293,7 @@ function wireLibs() {
       const res = await fetch(
         "/api/libs/upload?name=" + encodeURIComponent(name) +
         "&version=" + encodeURIComponent(ver) + "&note=" + encodeURIComponent(note),
-        { method: "POST", headers: { Authorization: "Bearer " + state.session }, body: file }
+        { method: "POST", body: file, credentials: "same-origin" }
       );
       const j = await res.json();
       if (j.ok) {

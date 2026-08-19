@@ -11,6 +11,8 @@ Release-hardened:
 from __future__ import annotations
 
 import json
+import base64
+import ipaddress
 import os
 import secrets
 import sys
@@ -28,6 +30,8 @@ sys.path.insert(0, str(HERE.parent))
 
 from crownauth import db  # noqa: E402
 from crownauth import owner_auth  # noqa: E402
+from crownauth import experience  # noqa: E402
+from crownauth import payload_security  # noqa: E402
 from crownauth.crypto_v2 import (  # noqa: E402
     SessionClaims,
     SESSION_VERSION,
@@ -48,12 +52,66 @@ from crownauth.crypto_v2 import (  # noqa: E402
 STATIC = HERE / "static"
 CHALLENGES: dict[str, dict[str, Any]] = {}
 CHAL_LOCK = threading.Lock()
+PUBLIC_RATE: dict[str, tuple[int, int]] = {}
+PUBLIC_RATE_LOCK = threading.Lock()
+MAX_PUBLIC_RATE_KEYS = 10000
 PRIV, PUB = load_or_create_keypair()
 DEFAULT_LIB_CDN_BASE = "https://github.com/WesleighKanee/crownauth-live/releases/download/library-cdn-v1"
+_PAYLOAD_SECURITY = None
+_PAYLOAD_SECURITY_DB = None
+
+
+def payload_service():
+    global _PAYLOAD_SECURITY, _PAYLOAD_SECURITY_DB
+    db_path = str(db.DB_PATH)
+    store_root = Path(os.environ.get("CROWNAUTH_PAYLOAD_STORE") or (Path(db.DB_PATH).parent / "payload_store"))
+    service_key = db_path + "|" + str(store_root)
+    if _PAYLOAD_SECURITY is None or _PAYLOAD_SECURITY_DB != service_key:
+        # The payload service must always have the deployment-provided master
+        # key and an immutable content-addressed store.  Never silently fall
+        # back to plaintext/local-only payload handling.
+        store = payload_security.EncryptedContentStore(store_root)
+        _PAYLOAD_SECURITY = payload_security.PayloadSecurity(store=store)
+        _PAYLOAD_SECURITY_DB = service_key
+    return _PAYLOAD_SECURITY
+
+
+def _production_mode() -> bool:
+    env = str(os.environ.get("APP_ENV") or os.environ.get("ENVIRONMENT") or "").strip().lower()
+    return env in {"prod", "production"}
+
+
+def _session_cookie(name: str, value: str, *, max_age: int = 43200) -> str:
+    flags = f"{name}={urllib.parse.quote(value, safe='')}; Path=/; HttpOnly; SameSite=Strict; Max-Age={int(max_age)}"
+    # Local HTTP tests/development must remain usable; production cookies are
+    # never sent over cleartext, even when a proxy terminates TLS upstream.
+    if _production_mode():
+        flags += "; Secure"
+    return flags
 
 
 def json_bytes(obj: Any, code: int = 200) -> tuple[int, bytes, str]:
     return code, json.dumps(obj, separators=(",", ":")).encode("utf-8"), "application/json"
+
+
+def public_rate(ip: str, limit: int = 240) -> bool:
+    """Process-local limiter; public reads must not mutate the experience DB."""
+    now = int(time.time()); key = str(ip or "")
+    with PUBLIC_RATE_LOCK:
+        # Bound process memory even when an attacker rotates source addresses.
+        expired = [k for k, (started, _) in PUBLIC_RATE.items() if now - started >= 60]
+        for k in expired[: max(0, len(expired) - MAX_PUBLIC_RATE_KEYS // 2)]:
+            PUBLIC_RATE.pop(k, None)
+        if len(PUBLIC_RATE) >= MAX_PUBLIC_RATE_KEYS and key not in PUBLIC_RATE:
+            oldest = min(PUBLIC_RATE, key=lambda k: PUBLIC_RATE[k][0])
+            PUBLIC_RATE.pop(oldest, None)
+        start, count = PUBLIC_RATE.get(key, (now, 0))
+        if now - start >= 60: start, count = now, 0
+        if count >= limit:
+            PUBLIC_RATE[key] = (start, count)
+            return False
+        PUBLIC_RATE[key] = (start, count + 1)
+        return True
 
 
 def client_err(msg: str, detail: str = "") -> dict:
@@ -309,6 +367,9 @@ def client_auth(body: dict, ip: str) -> dict:
         "message": toast,
         "expires_at": claims.exp,
         "license_expires_at": offline_until,
+        "server_time": int(time.time()),
+        "license_status": lic.get("status") or "active",
+        "license_tier": lic.get("tier") or claims.tier,
         "offline_envelope": offline_env,
         "offline_until": offline_until,
         "heartbeat_sec": int(s.get("heartbeat_sec", 120)),
@@ -391,6 +452,9 @@ def client_heartbeat(body: dict, ip: str) -> dict:
         "ok": True,
         "action": "continue",
         "server_time": int(time.time()),
+        "license_expires_at": int(lic.get("expires_at") or 0),
+        "tier": lic.get("tier") or claims.tier,
+        "license_status": lic.get("status") or "active",
         "config": signed_live_config(),
         "expires_at": claims.exp,
     }
@@ -548,9 +612,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._ip_allowed_owner(self._ip()):
             self._json({"ok": False, "error": "Forbidden"}, 403)
             return False
-        # LAN mode: no password — IP allowlist is enough
-        if not self._password_required():
-            return True
+        # IP allowlisting is defense in depth, never an authentication
+        # substitute.  Every owner API request must carry a valid token or
+        # authenticated owner session, including LAN deployments.
         if self._owner_ok():
             return True
         self._json({"ok": False, "error": "Unauthorized"}, 401)
@@ -560,6 +624,22 @@ class Handler(BaseHTTPRequestHandler):
         """UptimeRobot and similar monitors often use HEAD — was 501 before."""
         path = urllib.parse.urlparse(self.path).path
         cpre = self._client_prefix()
+        if path == cpre + "/experience/manifest":
+            payload, etag, _ = experience.get_manifest()
+            # Public reads are strictly side-effect free.  A first-run server
+            # returns an unavailable manifest until an owner publishes one.
+            if payload is None:
+                if self.headers.get("If-None-Match") == etag:
+                    self.send_response(304); self._cors(); self.send_header("ETag", etag); self.send_header("Content-Length", "0"); self.end_headers(); return
+                # Return a signed, in-memory safe baseline for older clients;
+                # importantly this does not create a draft or advance state.
+                base = experience.fallback_manifest()
+                payload = {"ok": True, "manifest": experience.sign_payload(base)}
+                self.send_response(200); self._cors(); self.send_header("ETag", etag); self.send_header("Content-Length", str(len(json.dumps(payload, separators=(",", ":")).encode()))); self.end_headers(); return
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304); self._cors(); self.send_header("ETag", etag); self.send_header("Content-Length", "0"); self.end_headers(); return
+            raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            self.send_response(200); self._cors(); self.send_header("Content-Type", "application/json"); self.send_header("ETag", etag); self.send_header("Content-Length", str(len(raw))); self.end_headers(); return
         if path in (cpre + "/health", cpre + "/ping", "/health", "/ping", "/"):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -597,14 +677,54 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "error": "error"}, 500)
 
     def _ip(self) -> str:
-        # Cloudflare / reverse proxy client IP
-        cf = self.headers.get("CF-Connecting-IP")
+        """Resolve the peer address without trusting spoofable proxy headers.
+
+        Forwarded headers are accepted only when the immediate TCP peer is in
+        TRUSTED_PROXY_CIDRS (or the equivalent setting).  This is fail-closed
+        by default, which is important for rate limits and owner allowlists.
+        """
+        peer = str(self.client_address[0] or "").strip()
+        try:
+            peer_ip = ipaddress.ip_address(peer)
+        except ValueError:
+            return peer
+        trusted = self._trusted_proxy_networks()
+        if not any(peer_ip in n for n in trusted):
+            return peer
+        cf = (self.headers.get("CF-Connecting-IP") or "").strip()
+        xff = self.headers.get("X-Forwarded-For") or ""
+        chain = [x.strip() for x in xff.split(",") if x.strip()]
         if cf:
-            return cf.strip()
-        xff = self.headers.get("X-Forwarded-For")
-        if xff:
-            return xff.split(",")[0].strip()
-        return self.client_address[0]
+            chain.append(cf)
+        # Walk from the proxy toward the client and select the first address
+        # that is not itself a trusted proxy.  Invalid values are ignored.
+        for candidate in reversed(chain):
+            try:
+                addr = ipaddress.ip_address(candidate)
+            except ValueError:
+                continue
+            if not any(addr in n for n in trusted):
+                return str(addr)
+        return peer
+
+    @staticmethod
+    def _trusted_proxy_networks() -> tuple[Any, ...]:
+        raw = os.environ.get("TRUSTED_PROXY_CIDRS") or db.get_setting("trusted_proxy_cidrs", "") or ""
+        out = []
+        for item in str(raw).replace(";", ",").split(","):
+            item = item.strip()
+            if not item:
+                continue
+            try:
+                network = ipaddress.ip_network(item, strict=False)
+                # A default route would make every client-controlled header
+                # authoritative and is therefore never a trusted proxy rule.
+                if network.prefixlen == 0:
+                    continue
+                out.append(network)
+            except ValueError:
+                continue
+        return tuple(out)
 
     def _reseller_session(self) -> Optional[dict]:
         auth = self.headers.get("Authorization") or ""
@@ -667,6 +787,60 @@ class Handler(BaseHTTPRequestHandler):
         owner_login = "/app/owner/auth/login"
         user_login = "/app/user/auth/login"
 
+        # Authenticated v3 payload reads.  The bearer token is bound to every
+        # requested hash/lib/revision before either metadata or ciphertext is
+        # returned; errors intentionally collapse to 404/403.
+        if path.startswith("/v3/payload/metadata/") or path.startswith("/v3/payload/content/"):
+            try:
+                token = str(self.headers.get("Authorization") or "")
+                if not token.startswith("Bearer "):
+                    return self._json({"ok": False, "error": "payload unavailable"}, 403)
+                token = token[7:].strip()
+                parts = token.split(".")
+                if len(parts) != 3 or parts[0] != "PAS1":
+                    return self._json({"ok": False, "error": "payload unavailable"}, 403)
+                raw_claims = base64.urlsafe_b64decode(parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4))
+                claims = json.loads(raw_claims.decode("utf-8"))
+                digest = path.rsplit("/", 1)[-1].lower()
+                svc = payload_service()
+                svc.verify_authorization(token, install_id=str(claims["install_id"]), lib_id=str(claims["lib_id"]), revision=str(claims["revision"]), payload_hash=digest, nonce=str(claims.get("nonce") or ""))
+                metadata = svc.payload_metadata(digest)
+                if path.startswith("/v3/payload/metadata/"):
+                    return self._json({"ok": True, "metadata": metadata})
+                ciphertext = svc.store.read_ciphertext(metadata)
+                return self._send(200, ciphertext, "application/octet-stream", extra_headers={"Cache-Control": "no-store", "X-Payload-SHA256": digest})
+            except Exception:
+                return self._json({"ok": False, "error": "payload unavailable"}, 404)
+
+        if path == "/v3/libs":
+            # Catalog contains only immutable identifiers/hashes. Payload
+            # bytes still require an enrolled installation authorization.
+            try:
+                items = []
+                svc = payload_service()
+                for row in db.lib_list(enabled_only=True):
+                    name = str(row.get("name") or "")
+                    digest = str(row.get("sha256") or "").lower()
+                    if name and len(digest) == 64:
+                        # Never advertise a v3 item unless its encrypted object
+                        # and signed metadata actually exist.  The stable v3
+                        # identity is the normalized library name; database
+                        # row ids are deployment-local and must not enter the
+                        # authorization contract.
+                        try:
+                            meta = svc.payload_metadata(digest)
+                        except payload_security.PayloadNotFound:
+                            continue
+                        signed = meta.get("metadata") or {}
+                        lib_id = name
+                        revision = str(row.get("version") or "1")
+                        if str(signed.get("lib_id")) != lib_id or str(signed.get("revision")) != revision:
+                            continue
+                        items.append({"name": name, "lib_id": lib_id, "revision": revision, "sha256": digest})
+                return self._json({"ok": True, "items": items})
+            except Exception:
+                return self._json({"ok": False, "error": "catalog unavailable"}, 503)
+
         # root — friendly landing (fixed links, MetaPlus-style)
         if path == "/":
             host = (db.get_setting("client_api_host") or "").strip()
@@ -718,6 +892,19 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
             return self._file(fp, ctype)
 
         # client public API
+        if path == cpre + "/experience/manifest":
+            if not public_rate(self._ip()):
+                return self._json({"ok": False, "error": "too many requests"}, 429)
+            payload, etag, _ = experience.get_manifest()
+            if payload is None:
+                if self.headers.get("If-None-Match") == etag:
+                    return self._send(304, b"", "application/json", extra_headers={"ETag": etag})
+                base = experience.fallback_manifest()
+                return self._send(200, json.dumps({"ok":True,"manifest":experience.sign_payload(base)}, separators=(",", ":")).encode(), "application/json", extra_headers={"ETag": etag, "Cache-Control": "no-store"})
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304); self._cors(); self.send_header("ETag", etag); self.send_header("Content-Length", "0"); self.end_headers(); return
+            raw = json.dumps(payload or {"ok": False, "error": "manifest unavailable"}, separators=(",", ":")).encode("utf-8")
+            return self._send(200, raw, "application/json", extra_headers={"ETag": etag, "Cache-Control": "public, max-age=30"})
         # CRON / UptimeRobot keep-alive: cheapest wake. No DB. Render sleep
         # needs EXTERNAL hits — 127.0.0.1 ticks in cloud_entry do not count.
         if path in (cpre + "/ping", "/ping"):
@@ -745,8 +932,6 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
             return self._json(
                 {
                     "ok": True,
-                    "m": 1 if s.get("maintenance") else 0,
-                    "k": 1 if s.get("kill_switch") else 0,
                     "t": int(time.time()),
                     "b": "panel_libs_v28_github_cdn",
                     "min_proto": int(s.get("min_client_protocol") or 0),
@@ -786,6 +971,12 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 return self._send(404, b"Not Found", "text/plain")
             return self._json({"ok": True, "k": public_raw_bytes(PUB).hex()})
 
+        # Keep the legacy feed available for existing clients until the
+        # operator explicitly cuts it off after v3 dual delivery.
+        if path == cpre + "/libs" or path.startswith(cpre + "/libs/"):
+            if db.get_setting("legacy_libs_cutoff", False) or not db.get_setting("legacy_libs_migration_enabled", True):
+                return self._send(404, b"Not Found", "text/plain")
+
         # mod library manifest — public read of ENABLED mods only.
         # Session lock broke the APK sync (401 → keep old shelf → delete never applied).
         # Owner upload/delete stays on /api/libs*.
@@ -806,7 +997,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 if has_cover and db.lib_cdn_only():
                     from crownauth.lib_cdn import cover_url as cdn_cover_url
 
-                    cover_url = cdn_cover_url(card)
+                    cover_url = cdn_cover_url(card, db.lib_cover_fmt(card)) + "?v=" + urllib.parse.quote(db.lib_cover_ver(card))
                 elif has_cover and base:
                     cover_url = "%s%s/libs/%s/cover" % (base, cpre, card)
                 elif has_cover:
@@ -819,6 +1010,9 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "version": r.get("version") or "",
                     "size": int(r.get("size") or 0),
                     "md5": r.get("md5") or "",
+                    "id": card,
+                    "display_name": next((x["display_name"] for x in db.library_labels() if x["stable_id"] == card), card),
+                    "sha256": r.get("sha256") or "",
                     "enabled": True,
                     "url": url,
                     "cover": has_cover,
@@ -839,7 +1033,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
 
                     if not db.lib_has_cover(stem):
                         return self._send(404, b"no cover", "text/plain")
-                    location = cdn_cover_url(db.lib_card_name(stem))
+                    location = cdn_cover_url(db.lib_card_name(stem), db.lib_cover_fmt(stem)) + "?v=" + urllib.parse.quote(db.lib_cover_ver(stem))
                     self.send_response(302)
                     self._cors()
                     self.send_header("Location", location)
@@ -847,12 +1041,14 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     self.send_header("Cache-Control", "public, max-age=300")
                     self.end_headers()
                     return
-                fp = db.lib_cover_path(stem)
+                fp = db.lib_cover_path(stem, db.lib_cover_fmt(stem))
                 if not fp.is_file():
                     return self._send(404, b"no cover", "text/plain")
                 data = fp.read_bytes()
                 ctype = "image/jpeg"
-                if data.startswith(b"\x89PNG"):
+                if data.startswith(b"GIF8"):
+                    ctype = "image/gif"
+                elif data.startswith(b"\x89PNG"):
                     ctype = "image/png"
                 elif data.startswith(b"RIFF"):
                     ctype = "image/webp"
@@ -897,6 +1093,15 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
             self.end_headers()
             self.wfile.write(data)
             return
+
+        if path.startswith(cpre + "/experience/assets/"):
+            name = urllib.parse.unquote(path[len(cpre + "/experience/assets/"):])
+            if not name or "/" in name or "\\" in name or name.startswith("."):
+                return self._send(404, b"not found", "text/plain")
+            root = Path(os.environ.get("EXPERIENCE_CDN_DIR") or str(db.DATA / "experience_cdn")); fp = (root / name).resolve()
+            if not str(fp).startswith(str(root.resolve())) or not fp.is_file(): return self._send(404, b"not found", "text/plain")
+            data = fp.read_bytes(); ctype = "image/gif" if fp.suffix.lower() == ".gif" else "image/jpeg"
+            return self._send(200, data, ctype, extra_headers={"ETag": '"%s"' % __import__('hashlib').sha256(data).hexdigest(), "Cache-Control": "public, max-age=31536000, immutable"})
 
         # auth status for panel (no secret leak)
         if path == "/auth/status":
@@ -949,6 +1154,12 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
         if path.startswith("/api/"):
             if not self._require_owner():
                 return
+            if path == "/api/experience/draft":
+                state = experience.current_state(); d = dict(state["draft"]); d["config"] = json.loads(d.get("config_json") or "{}"); d["labels"] = json.loads(d.get("labels_json") or "[]")
+                return self._json({"ok": True, "draft": d, "manifest_revision": state["manifest_revision"], "published_revision_id": state["published_revision_id"]})
+            if path == "/api/experience/history":
+                return self._json({"ok": True, "items": experience.history((qs.get("limit") or [20])[0])})
+
             if path == "/api/libs":
                 return self._json({"ok": True, "libs": db.lib_list()})
             if path == "/api/dashboard":
@@ -1008,11 +1219,38 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
 
     def _route_post(self) -> None:
         path = urllib.parse.urlparse(self.path).path
-        # Read the raw body ONCE up front. JSON handlers parse it below;
-        # the /api/libs/upload handler needs the raw bytes (so _read_json
-        # must NOT consume the stream first).
-        _body_len = int(self.headers.get("Content-Length") or 0)
-        _raw_body = self.rfile.read(_body_len) if _body_len else b"{}"
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        # Authenticate owner routes before touching an upload stream.  This is
+        # deliberately before parsing Content-Length/body to prevent unauth
+        # callers from forcing an arbitrary body allocation/read.
+        owner_route = path.startswith("/api/")
+        if owner_route and not self._require_owner():
+            return
+        if owner_route:
+            ok_rl, rl_msg = db.rate_check(f"owner_api:{self._ip()}", 120, 60)
+            if not ok_rl:
+                return self._json({"ok": False, "error": rl_msg}, 429)
+            db.rate_fail(f"owner_api:{self._ip()}", 120, 60)
+        try:
+            _body_len = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            return self._json({"ok": False, "error": "invalid content length"}, 400)
+        if _body_len < 0 or (owner_route and _body_len > 60 * 1024 * 1024):
+            return self._json({"ok": False, "error": "upload exceeds limit"}, 413)
+        # Read in bounded chunks into a temporary spool rather than one
+        # unbounded socket read.  The media decoder still receives bytes, but
+        # the transport itself is bounded and rejects short/oversized bodies.
+        import tempfile
+        _raw_body = b"{}"
+        if _body_len:
+            with tempfile.SpooledTemporaryFile(max_size=1 * 1024 * 1024, mode="w+b") as _spool:
+                remaining = _body_len
+                while remaining:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        return self._json({"ok": False, "error": "incomplete body"}, 400)
+                    _spool.write(chunk); remaining -= len(chunk)
+                _spool.seek(0); _raw_body = _spool.read()
         body = {}
         if _body_len <= 262144:
             try:
@@ -1021,6 +1259,36 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 body = {}
         ip = self._ip()
         cpre = self._client_prefix()
+
+        # Payload-security v3 is separate from the legacy client bridge.
+        if path == "/v3/install/challenge":
+            try:
+                return self._json(payload_service().begin_enrollment(install_id=body.get("install_id"), license_id=body.get("license_id"), token=body.get("token")))
+            except Exception:
+                return self._json({"ok": False, "error": "enrollment unavailable"}, 403)
+        if path == "/v3/payload/challenge":
+            try:
+                return self._json(payload_service().challenge_authorization(install_id=body.get("install_id"), lib_id=body.get("lib_id"), revision=body.get("revision"), payload_hash=body.get("payload_hash"), nonce=body.get("nonce")))
+            except Exception:
+                return self._json({"ok": False, "error": "authorization unavailable"}, 403)
+        if path == "/v3/install/enroll":
+            try:
+                return self._json(payload_service().complete_enrollment(install_id=body.get("install_id"), challenge=body.get("challenge"), signing_public_key=body.get("signing_public_key"), encryption_public_key=body.get("encryption_public_key"), proof=body.get("proof")))
+            except Exception:
+                return self._json({"ok": False, "error": "enrollment failed"}, 403)
+        if path == "/v3/payload/authorize":
+            try:
+                out = payload_service().authorize(install_id=body.get("install_id"), challenge=body.get("challenge"), proof=body.get("proof"), nonce=body.get("nonce"), ttl=body.get("ttl", 300))
+                if body.get("include_key"):
+                    out["wrapped_key"] = payload_service().content_key_for_authorization(out["authorization"], install_id=body.get("install_id"))
+                return self._json(out)
+            except Exception:
+                return self._json({"ok": False, "error": "authorization failed"}, 403)
+        if path == "/v3/payload/lease":
+            try:
+                return self._json(payload_service().issue_offline_lease(authorization=body.get("authorization"), install_id=body.get("install_id"), seconds=body.get("seconds", 3600)))
+            except Exception:
+                return self._json({"ok": False, "error": "lease unavailable"}, 403)
 
         # owner login (no LAN-only block when public Cloudflare)
         if path == "/auth/login":
@@ -1038,7 +1306,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 db.audit("owner", "login.ok", ip)
                 return self._json(
                     {"ok": True, "session": sess},
-                    extra={"Set-Cookie": f"oc_session={sess}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200"},
+                    extra={"Set-Cookie": _session_cookie("oc_session", sess)},
                 )
             db.rate_fail(f"owner_login:{ip}", 8, 900)
             db.audit("owner", "login.fail", ip)
@@ -1059,13 +1327,13 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
             db.audit("reseller", "login.ok", r["name"])
             return self._json(
                 {"ok": True, "session": sess, "name": r["name"]},
-                extra={"Set-Cookie": f"rs_session={sess}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200"},
+                extra={"Set-Cookie": _session_cookie("rs_session", sess)},
             )
 
         if path == "/reseller/api/logout":
             return self._json(
                 {"ok": True},
-                extra={"Set-Cookie": "rs_session=; Path=/; Max-Age=0"},
+                extra={"Set-Cookie": _session_cookie("rs_session", "", max_age=0)},
             )
 
         if path == "/reseller/api/licenses/create":
@@ -1140,7 +1408,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
         if path == "/auth/logout":
             return self._json(
                 {"ok": True},
-                extra={"Set-Cookie": "oc_session=; Path=/; Max-Age=0"},
+                extra={"Set-Cookie": _session_cookie("oc_session", "", max_age=0)},
             )
 
         if path == "/auth/change_password":
@@ -1165,6 +1433,13 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 persist_msg = str(e)
             return self._json({"ok": True, "persist": persist_msg})
 
+        if path == "/api/payload/revoke":
+            try:
+                count = payload_service().revoke(install_id=body.get("install_id"), authorization_id=body.get("authorization_id"), lease_id=body.get("lease_id"), license_id=body.get("license_id"))
+                return self._json({"ok": True, "revoked": count})
+            except Exception:
+                return self._json({"ok": False, "error": "revocation failed"}, 400)
+
         # client
         if path == cpre + "/auth":
             return self._json(client_auth(body, ip))
@@ -1175,6 +1450,143 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
         if path.startswith("/api/"):
             if not self._require_owner():
                 return
+            if (path.startswith("/api/experience/") or path == "/api/library/display-name") and not self._owner_ok():
+                return self._json({"ok": False, "error": {"code": "unauthenticated", "message": "owner authentication required"}}, 401)
+
+            if path == "/api/experience/draft":
+                try:
+                    out = experience.update_draft(body, expected_revision=body.get("expected_revision")); db.audit("owner", "experience.draft", "revision=%s" % out.get("manifest_revision")); return self._json(out)
+                except experience.ConflictError as e: return self._json({"ok": False, "error": {"code": e.code, "message": e.message}}, 409)
+                except experience.ExperienceError as e: return self._json({"ok": False, "error": {"code": e.code, "message": e.message}}, 422)
+            if path == "/api/experience/assets":
+                slot = (qs.get("slot") or [""])[0].strip().lower()
+                if slot not in ("login", "library"): return self._json({"ok": False, "error": {"code": "slot", "message": "slot must be login or library"}}, 400)
+                # Theme Director uploads are optimistic-concurrency writes.
+                # Read the revision directly (without current_state(), which
+                # may create a draft) and reject stale/missing coordinates
+                # before decoding media or touching the CDN.
+                query_revision = (qs.get("expected_revision") or [""])[0].strip()
+                header_revision = (self.headers.get("X-Expected-Revision") or "").strip()
+                if not query_revision and not header_revision:
+                    return self._json({"ok": False, "error": {"code": "expected_revision", "message": "expected revision is required"}}, 400)
+                if query_revision and header_revision and query_revision != header_revision:
+                    return self._json({"ok": False, "error": {"code": "expected_revision", "message": "revision coordinates disagree"}}, 400)
+                try:
+                    expected_upload_revision = int(query_revision or header_revision)
+                    if expected_upload_revision < 0:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    return self._json({"ok": False, "error": {"code": "expected_revision", "message": "revision must be a non-negative integer"}}, 400)
+                rev_con = db.connect()
+                try:
+                    rev_row = rev_con.execute("SELECT manifest_revision FROM experience_state WHERE singleton_id=1").fetchone()
+                    current_upload_revision = int((rev_row[0] if rev_row else 0) or 0)
+                finally:
+                    rev_con.close()
+                if current_upload_revision != expected_upload_revision:
+                    return self._json({"ok": False, "error": {"code": "stale_revision", "message": "manifest revision changed", "current_revision": current_upload_revision}}, 409)
+                if _body_len <= 0 or _body_len > 60 * 1024 * 1024: return self._json({"ok": False, "error": {"code": "too_large", "message": "upload exceeds limit"}}, 413)
+                try:
+                    from crownauth.experience_media import validate_and_render
+                    from crownauth.lib_cdn import LocalContentCDN, publish_immutable, experience_cdn, content_address
+                    media = validate_and_render(_raw_body, slot=slot)
+                    # Explicit production requires a configured object CDN;
+                    # tests/dev use the isolated DB data directory.
+                    prod = str(os.environ.get("APP_ENV") or os.environ.get("ENVIRONMENT") or "").lower() in {"prod", "production"}
+                    cdn = (experience_cdn(staging=True) if os.environ.get("EXPERIENCE_CDN_DIR")
+                           else LocalContentCDN(str(db.DATA / "experience_cdn"))) if not prod else experience_cdn(staging=False)
+                    records = []
+                    import uuid
+                    group = uuid.uuid4().hex
+                    created_names = []
+                    try:
+                        # Stage every immutable object before touching SQLite.
+                        # If any rendition fails, discard only objects created
+                        # by this request; pre-existing content-addressed data
+                        # remains available to other revisions.
+                        staged_names = []
+                        for r in media.renditions:
+                            name, _ = content_address(r.data, slot=slot, edge=max(r.width, r.height), fmt=r.format)
+                            existed = False
+                            try:
+                                probe = getattr(cdn, "exists", None)
+                                if callable(probe):
+                                    existed = bool(probe(name))
+                                else:
+                                    cdn.get(name)
+                                    existed = True
+                            except Exception:
+                                pass
+                            name = publish_immutable(cdn, r.data, slot=slot, edge=max(r.width, r.height), fmt=r.format)["name"]
+                            staged_names.append(name)
+                            if not existed:
+                                created_names.append(name)
+                        con = db.connect()
+                        try:
+                            con.execute("BEGIN IMMEDIATE")
+                            locked_state = con.execute("SELECT manifest_revision FROM experience_state WHERE singleton_id=1").fetchone()
+                            locked_revision = int((locked_state[0] if locked_state else 0) or 0)
+                            if locked_revision != expected_upload_revision:
+                                raise experience.ConflictError("stale_revision", "manifest revision changed")
+                            now = int(time.time())
+                            for r, name in zip(media.renditions, staged_names):
+                                con.execute("INSERT OR IGNORE INTO experience_assets(slot,sha256,format,width,height,frame_count,duration_ms,bytes,cdn_name,created_at,rendition_group) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                                            (slot, r.sha256, r.format, r.width, r.height, media.frame_count, media.duration_ms, len(r.data), name, now, group))
+                                # The digest is not globally unique: an
+                                # identical rendition in the other slot has a
+                                # different manifest identity and CDN name.
+                                row = con.execute("SELECT * FROM experience_assets WHERE slot=? AND sha256=?", (slot, r.sha256)).fetchone()
+                                records.append(dict(row))
+                            did = experience.default_draft(con)
+                            col = "login_asset_id" if slot == "login" else "library_asset_id"
+                            con.execute(f"UPDATE experience_revisions SET {col}=? WHERE id=?", (records[0]["id"], did))
+                            con.commit()
+                        except Exception:
+                            con.rollback()
+                            raise
+                        finally:
+                            con.close()
+                    except Exception:
+                        cleanup_many = getattr(cdn, "discard_many", None)
+                        if callable(cleanup_many):
+                            try: cleanup_many(created_names)
+                            except Exception: pass
+                        else:
+                            discard = getattr(cdn, "discard", None) or getattr(cdn, "remove", None)
+                            if callable(discard):
+                                for name in created_names:
+                                    try: discard(name)
+                                    except Exception: pass
+                        raise
+                    db.audit("owner", "experience.upload", "%s bytes=%d" % (slot,_body_len)); return self._json({"ok": True,"slot":slot,"asset":records[0],"renditions":records})
+                except Exception as e:
+                    if hasattr(e, "code"): return self._json({"ok": False,"error":{"code":e.code,"message":str(e)}},422)
+                    return self._json({"ok": False,"error":{"code":"media_failed","message":"media validation failed"}},422)
+            if path == "/api/experience/publish":
+                try:
+                    out = experience.publish(expected_revision=body.get("expected_revision"), idempotency_key=self.headers.get("Idempotency-Key") or "", request_hash=__import__('hashlib').sha256(_raw_body).hexdigest()); db.audit("owner", "experience.publish", "revision=%s" % out.get("revision")); return self._json(out)
+                except experience.ConflictError as e: return self._json({"ok": False,"error":{"code":e.code,"message":e.message}},409)
+                except experience.ExperienceError as e: return self._json({"ok": False,"error":{"code":e.code,"message":e.message}},422)
+            if path == "/api/experience/rollback":
+                try:
+                    target = int(body.get("revision_id") or body.get("id") or 0)
+                    out = experience.rollback(target, expected_revision=body.get("expected_revision"), idempotency_key=self.headers.get("Idempotency-Key") or "", request_hash=__import__('hashlib').sha256(_raw_body).hexdigest())
+                    db.audit("owner", "experience.rollback", "target=%s revision=%s" % (target, out.get("revision"))); return self._json(out)
+                except experience.ConflictError as e: return self._json({"ok":False,"error":{"code":e.code,"message":e.message}},409)
+                except Exception: return self._json({"ok":False,"error":{"code":"rollback_failed","message":"rollback failed"}},422)
+            if path == "/api/library/display-name":
+                try:
+                    sid = str(body.get("stable_id") or body.get("id") or "").upper()
+                    out = experience.rename_label(
+                        sid, str(body.get("display_name") or ""),
+                        expected_revision=body.get("expected_revision"),
+                        idempotency_key=self.headers.get("Idempotency-Key") or "",
+                        request_hash=__import__('hashlib').sha256(_raw_body).hexdigest(),
+                    )
+                    db.audit("owner", "library.rename", sid)
+                    return self._json(out)
+                except experience.ConflictError as e: return self._json({"ok":False,"error":{"code":e.code,"message":e.message}},409)
+                except ValueError as e: return self._json({"ok":False,"error":{"code":"invalid_label","message":str(e)}},422)
 
             if path == "/api/libs/cover":
                 _qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -1182,8 +1594,8 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 n = _body_len
                 if not name:
                     return self._json({"ok": False, "error": "name required"}, 400)
-                if n <= 0 or n > 4 * 1024 * 1024:
-                    return self._json({"ok": False, "error": "cover must be under 4 MB"}, 400)
+                if n <= 0 or n > 15 * 1024 * 1024:
+                    return self._json({"ok": False, "error": "cover must be under 15 MB"}, 400)
                 try:
                     stem = db.lib_card_name(name)
                     if not stem:
@@ -1220,9 +1632,23 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                 try:
                     # normalize before save so panel + app share STEM.so
                     name = db.lib_normalize_name(name)
+                    # Dual-publish when the v3 master key is configured.  The
+                    # encrypted object is created before either public legacy
+                    # publication or DB mutation, so a v3 failure cannot leave
+                    # a newly-advertised plaintext-only library.  Existing
+                    # 1.6.62 deployments without the new key keep their legacy
+                    # behavior until migration is explicitly configured.
+                    secure_result = None
+                    if str(os.environ.get("CROWNAUTH_PAYLOAD_MASTER_KEY") or "").strip():
+                        secure_result = payload_service().publish_payload(
+                            _raw_body, lib_id=name, revision=str(version or "1"),
+                            metadata={"name": name},
+                        )
                     from crownauth.lib_cdn import publish as publish_lib
                     cdn_result = publish_lib(name, _raw_body)
                     lib = db.lib_save(name, _raw_body, version, note)
+                    if secure_result and str(secure_result.get("sha256") or "").lower() != str(lib.get("sha256") or "").lower():
+                        raise RuntimeError("secure payload hash mismatch")
                 except ValueError as e:
                     return self._json({"ok": False, "error": str(e) or "bad name"}, 400)
                 except Exception as e:
@@ -1236,6 +1662,7 @@ code{{background:#222;padding:2px 6px;border-radius:6px;font-size:13px;word-brea
                     "ok": True,
                     "lib": lib,
                     "cdn": cdn_result,
+                    "payload_v3": secure_result,
                     "card": lib.get("card") or db.lib_card_name(lib["name"]),
                 })
 

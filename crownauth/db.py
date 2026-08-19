@@ -40,6 +40,9 @@ DEFAULT_SETTINGS = {
     "maintenance_message": "Maintenance in progress. Try again later.",
     "api_bind": "0.0.0.0",
     "api_port": 8787,
+    # Empty is intentional: forwarded identity is ignored unless deployment
+    # explicitly supplies the proxy CIDRs (fail-closed).
+    "trusted_proxy_cidrs": "",
     "require_challenge": True,
     "max_failed_auth": 500,
     "ban_duration_sec": 60,
@@ -107,6 +110,10 @@ DEFAULT_SETTINGS = {
     "update_apk_upstream": "https://github.com/WesleighKanee/crownauth-live/releases/latest/download/WhiteCrownsLoaderV2.apk",
     "update_message": "A new update is available — install will open. Allow install, then reopen.",
     "blocked_build_ids": [],  # e.g. ["harden_v1","cracked_build"]
+    # Existing 1.6.x clients keep using /v2/libs during migration. Operators
+    # explicitly set legacy_libs_cutoff only after dual delivery is complete.
+    "legacy_libs_migration_enabled": True,
+    "legacy_libs_cutoff": False,
 }
 
 
@@ -212,6 +219,11 @@ def init_db() -> None:
             created_at INTEGER NOT NULL DEFAULT 0,
             has_cover INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS covers (
+            stem TEXT PRIMARY KEY,
+            has_cover INTEGER NOT NULL DEFAULT 0,
+            ver TEXT DEFAULT ''
+        );
         CREATE TABLE IF NOT EXISTS resellers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
@@ -237,6 +249,10 @@ def init_db() -> None:
         ("reseller", "ALTER TABLE licenses ADD COLUMN reseller TEXT DEFAULT ''"),
         ("prefix_tag", "ALTER TABLE licenses ADD COLUMN prefix_tag TEXT DEFAULT ''"),
         ("has_cover", "ALTER TABLE libs ADD COLUMN has_cover INTEGER NOT NULL DEFAULT 0"),
+        ("fmt", "ALTER TABLE covers ADD COLUMN fmt TEXT DEFAULT 'jpg'"),
+        ("sha256", "ALTER TABLE libs ADD COLUMN sha256 TEXT DEFAULT ''"),
+        ("manifest_revision", "ALTER TABLE experience_revisions ADD COLUMN manifest_revision INTEGER NOT NULL DEFAULT 0"),
+        ("rendition_group", "ALTER TABLE experience_assets ADD COLUMN rendition_group TEXT NOT NULL DEFAULT ''"),
     ):
         try:
             cur.execute(ddl)
@@ -280,10 +296,164 @@ def init_db() -> None:
         cur.execute(
             """INSERT OR IGNORE INTO plans(name, duration_days, max_devices, tier, features, created_at, duration_seconds)
                VALUES(?,?,?,?,?,?,?)""",
-            (name, days, devs, tier, 0xFFFF, now, secs),
+               (name, days, devs, tier, 0xFFFF, now, secs),
         )
+    # Remote experience/control-plane schema.  This migration is deliberately
+    # additive and idempotent: existing owner databases retain all rows and
+    # can be upgraded while readers are still running.
+    cur.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS experience_assets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slot TEXT NOT NULL CHECK(slot IN ('login','library')),
+            sha256 TEXT NOT NULL,
+            format TEXT NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            frame_count INTEGER NOT NULL DEFAULT 1,
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            bytes INTEGER NOT NULL,
+            cdn_name TEXT NOT NULL,
+            rendition_group TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS experience_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manifest_revision INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL CHECK(status IN ('draft','published','archived')),
+            login_asset_id INTEGER REFERENCES experience_assets(id),
+            library_asset_id INTEGER REFERENCES experience_assets(id),
+            login_focal_x REAL NOT NULL DEFAULT 0.5,
+            login_focal_y REAL NOT NULL DEFAULT 0.5,
+            library_focal_x REAL NOT NULL DEFAULT 0.5,
+            library_focal_y REAL NOT NULL DEFAULT 0.5,
+            config_json TEXT NOT NULL DEFAULT '{}',
+            labels_json TEXT NOT NULL DEFAULT '[]',
+            created_at INTEGER NOT NULL,
+            published_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS experience_state (
+            singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
+            current_revision_id INTEGER REFERENCES experience_revisions(id),
+            manifest_revision INTEGER NOT NULL DEFAULT 0,
+            signed_envelope TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS library_labels (
+            stable_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS idempotency (
+            key TEXT PRIMARY KEY,
+            request_hash TEXT NOT NULL,
+            state TEXT NOT NULL,
+            response_json TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_experience_revisions_status
+            ON experience_revisions(status, id DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_experience_assets_slot_sha256
+            ON experience_assets(slot, sha256);
+        """
+    )
+    # Older panel databases used a global UNIQUE(sha256) constraint.  The
+    # same bytes uploaded to login and library are different manifest assets
+    # (their content-addressed names include the slot), so retain the rows
+    # while replacing that constraint with UNIQUE(slot, sha256).
+    try:
+        sql = str(cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='experience_assets'").fetchone()[0] or "")
+        if "sha256 TEXT NOT NULL UNIQUE" in sql.upper():
+            cur.execute("PRAGMA foreign_keys=OFF")
+            cur.execute("ALTER TABLE experience_assets RENAME TO experience_assets_legacy")
+            cur.execute("""CREATE TABLE experience_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slot TEXT NOT NULL CHECK(slot IN ('login','library')),
+                sha256 TEXT NOT NULL,
+                format TEXT NOT NULL,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                frame_count INTEGER NOT NULL DEFAULT 1,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                bytes INTEGER NOT NULL,
+                cdn_name TEXT NOT NULL,
+                rendition_group TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL
+            )""")
+            cur.execute("""INSERT INTO experience_assets
+                (id,slot,sha256,format,width,height,frame_count,duration_ms,bytes,cdn_name,rendition_group,created_at)
+                SELECT id,slot,sha256,format,width,height,frame_count,duration_ms,bytes,cdn_name,rendition_group,created_at
+                FROM experience_assets_legacy""")
+            cur.execute("DROP TABLE experience_assets_legacy")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_experience_assets_slot_sha256 ON experience_assets(slot,sha256)")
+            cur.execute("PRAGMA foreign_keys=ON")
+    except (TypeError, sqlite3.OperationalError):
+        # Fresh schemas and partially migrated legacy copies are handled by
+        # the additive statements above; never make startup fail on a best
+        # effort compatibility migration.
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_experience_assets_slot_sha256 ON experience_assets(slot,sha256)")
+    for stable_id in ("AURASIA", "AUREXIA", "AURYNXIA", "AUVEXIA"):
+        cur.execute(
+            "INSERT OR IGNORE INTO library_labels(stable_id, display_name, updated_at) VALUES(?,?,?)",
+            (stable_id, stable_id, now),
+        )
+    cur.execute("INSERT OR IGNORE INTO experience_state(singleton_id) VALUES(1)")
     con.commit()
     con.close()
+
+
+def experience_tables() -> tuple[str, ...]:
+    """Return the additive schema table names (useful for health/tests)."""
+    return ("experience_assets", "experience_revisions", "experience_state",
+            "library_labels", "idempotency")
+
+
+def library_labels() -> list[dict[str, Any]]:
+    con = connect()
+    rows = con.execute("SELECT stable_id, display_name, updated_at FROM library_labels ORDER BY stable_id").fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def validate_library_label(con: sqlite3.Connection, stable_id: str, display_name: str) -> tuple[str, str]:
+    """Validate a label using an existing transaction/connection."""
+    sid = str(stable_id or "").strip().upper()
+    name = str(display_name or "").strip()
+    import unicodedata
+    if not sid or len(sid) > 64 or any(not (c.isalnum() or c in "_-" ) for c in sid):
+        raise ValueError("invalid stable id")
+    # Labels may only be changed for a known embedded or cloud library.  Never
+    # let an arbitrary identifier become a manifest-controlled object.
+    known = {str(r["stable_id"]).upper() for r in con.execute("SELECT stable_id FROM library_labels").fetchall()}
+    known.update(str(r["name"]).rsplit("/", 1)[-1].removesuffix(".so").removeprefix("lib").upper()
+                 for r in con.execute("SELECT name FROM libs").fetchall())
+    if sid not in known:
+        raise ValueError("unknown stable id")
+    # Approximate grapheme clusters without adding a dependency: a base code
+    # point plus combining marks/variation selectors/ZWJ sequences counts once.
+    clusters = 0; join = False
+    for c in name:
+        cat = unicodedata.category(c)
+        if cat in ("Cc", "Cf") and c not in ("\u200d",):
+            raise ValueError("invalid display name")
+        if cat.startswith("M") or c in ("\ufe0f", "\u200d"):
+            join = True; continue
+        clusters += 1; join = False
+    if not name or clusters > 40:
+        raise ValueError("invalid display name")
+    return sid, name
+
+
+def set_library_label(stable_id: str, display_name: str) -> dict[str, Any]:
+    con = connect()
+    sid, name = validate_library_label(con, stable_id, display_name)
+    now = int(time.time())
+    con.execute("INSERT INTO library_labels(stable_id,display_name,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(stable_id) DO UPDATE SET display_name=excluded.display_name,updated_at=excluded.updated_at",
+                (sid, name, now))
+    con.commit()
+    row = con.execute("SELECT stable_id,display_name,updated_at FROM library_labels WHERE stable_id=?", (sid,)).fetchone()
+    con.close()
+    return dict(row)
 
 
 def duration_to_seconds(value: Any, unit: str = "days") -> int:
@@ -988,18 +1158,33 @@ def rate_clear_all() -> int:
 
 
 def rate_check(key: str, max_fails: int, ban_sec: int) -> tuple[bool, str]:
-    """Auth rate limit — permanently soft-disabled.
-
-    Hard IP bans caused mass buyer lockouts ("Temporarily blocked") after
-    failed OTA/login spam and shared carrier IPs. Do not re-enable without
-    a careful rollout.
-    """
-    return True, "ok"
+    """Small SQLite-backed fixed-window limiter for owner/public mutations."""
+    now = int(time.time()); key = str(key)[:160]
+    con = connect()
+    try:
+        row = con.execute("SELECT fails,window_start,blocked_until FROM rate_limit WHERE key=?", (key,)).fetchone()
+        if not row or now - int(row["window_start"]) >= int(ban_sec):
+            con.execute("INSERT OR REPLACE INTO rate_limit(key,fails,window_start,blocked_until) VALUES(?,?,?,0)", (key, 0, now)); con.commit(); return True, "ok"
+        if int(row["blocked_until"] or 0) > now:
+            return False, "too many requests"
+        if int(row["fails"] or 0) >= int(max_fails):
+            con.execute("UPDATE rate_limit SET blocked_until=? WHERE key=?", (now + int(ban_sec), key)); con.commit(); return False, "too many requests"
+        return True, "ok"
+    finally:
+        con.close()
 
 
 
 def rate_fail(key: str, max_fails: int, ban_sec: int) -> None:
-    return
+    now = int(time.time()); key = str(key)[:160]; con = connect()
+    try:
+        row = con.execute("SELECT fails,window_start FROM rate_limit WHERE key=?", (key,)).fetchone()
+        if not row or now - int(row["window_start"]) >= int(ban_sec):
+            con.execute("INSERT OR REPLACE INTO rate_limit(key,fails,window_start,blocked_until) VALUES(?,?,?,0)", (key, 1, now))
+        else:
+            con.execute("UPDATE rate_limit SET fails=fails+1 WHERE key=?", (key,))
+        con.commit()
+    finally: con.close()
 
 
 
@@ -1242,16 +1427,17 @@ def lib_save(name: str, data: bytes, version: str = "", note: str = "") -> dict:
 
     (lib_data_dir() / name).write_bytes(data) if not lib_cdn_only() else None
     md5 = _hl.md5(data).hexdigest()
+    sha256 = _hl.sha256(data).hexdigest()
     size = len(data)
     now = int(time.time())
     con = connect()
     con.execute(
-        """INSERT INTO libs(name, version, size, md5, enabled, note, created_at)
-           VALUES(?,?,?,?,1,?,?)
+        """INSERT INTO libs(name, version, size, md5, sha256, enabled, note, created_at)
+           VALUES(?,?,?,?,?,1,?,?)
            ON CONFLICT(name) DO UPDATE SET
              version=excluded.version, size=excluded.size, md5=excluded.md5,
-             note=excluded.note, enabled=1""",
-        (name, version, size, md5, note, now),
+             sha256=excluded.sha256, note=excluded.note, enabled=1""",
+        (name, version, size, md5, sha256, note, now),
     )
     con.commit()
     con.close()
@@ -1268,6 +1454,7 @@ def lib_save(name: str, data: bytes, version: str = "", note: str = "") -> dict:
         "version": version,
         "size": size,
         "md5": md5,
+        "sha256": sha256,
         "enabled": 1,
         "note": note,
     }
@@ -1351,22 +1538,57 @@ def lib_set_enabled(name: str, enabled: bool) -> None:
         pass
 
 
-def lib_cover_path(name: str):
-    """DATA/libs/STEM.cover.jpg"""
+def lib_cover_path(name: str, fmt: str = "jpg"):
+    """DATA/libs/STEM.cover.<fmt>"""
     stem = lib_card_name(name)
-    return lib_data_dir() / (stem + ".cover.jpg")
+    return lib_data_dir() / (stem + ".cover." + (fmt or "jpg"))
+
+
+def lib_cover_fmt(name: str) -> str:
+    """Stored format for a card's cover: 'jpg' or 'gif'."""
+    try:
+        stem = lib_card_name(name)
+        con = connect()
+        crow = con.execute("SELECT fmt FROM covers WHERE stem=?", (stem,)).fetchone()
+        con.close()
+        if crow and crow[0]:
+            return crow[0]
+    except Exception:
+        pass
+    return "jpg"
 
 
 def lib_has_cover(name: str) -> bool:
     try:
         if lib_cdn_only():
             con = connect()
+            stem = lib_card_name(name)
             row = con.execute("SELECT has_cover FROM libs WHERE name=?", (lib_normalize_name(name),)).fetchone()
+            if row and row[0]:
+                con.close()
+                return True
+            crow = con.execute("SELECT has_cover FROM covers WHERE stem=?", (stem,)).fetchone()
             con.close()
-            return bool(row and row[0])
-        return lib_cover_path(name).is_file()
+            return bool(crow and crow[0])
+        return lib_cover_path(name).is_file() or lib_cover_path(name, "gif").is_file()
     except Exception:
         return False
+
+
+def lib_cover_ver(name: str) -> str:
+    """Cache-busting version for a card's cover (changes when the cover changes)."""
+    try:
+        stem = lib_card_name(name)
+        con = connect()
+        crow = con.execute("SELECT ver FROM covers WHERE stem=?", (stem,)).fetchone()
+        if crow and crow[0]:
+            con.close()
+            return crow[0]
+        row = con.execute("SELECT md5 FROM libs WHERE name=?", (lib_normalize_name(name),)).fetchone()
+        con.close()
+        return (row[0] or "1") if row else "1"
+    except Exception:
+        return "1"
 
 
 # Keep the photographer's framing. Only downscale huge files. The card
@@ -1374,13 +1596,16 @@ def lib_has_cover(name: str) -> bool:
 COVER_MAX_EDGE = 1600
 
 
-def _cover_bytes(data: bytes) -> bytes:
-    """Accept jpg/png/webp. Fix EXIF rotation, downscale long edge, keep full frame."""
-    if not data or len(data) < 32 or len(data) > 4 * 1024 * 1024:
-        raise ValueError("cover must be an image under 4 MB")
+def _cover_bytes(data: bytes) -> tuple[bytes, str]:
+    """Accept jpg/png/webp/gif. Static images: fix EXIF, downscale, keep frame.
+    Animated GIFs pass through untouched so the deck/panel can animate them."""
+    if not data or len(data) < 32 or len(data) > 15 * 1024 * 1024:
+        raise ValueError("cover must be an image under 15 MB")
     head = data[:8]
+    if head.startswith(b"GIF8"):
+        return data, "gif"
     if not (head.startswith(b"\xff\xd8") or head.startswith(b"\x89PNG") or head.startswith(b"RIFF")):
-        raise ValueError("cover must be jpg, png, or webp")
+        raise ValueError("cover must be jpg, png, webp, or gif")
     try:
         from io import BytesIO
         from PIL import Image, ImageOps
@@ -1397,26 +1622,34 @@ def _cover_bytes(data: bytes) -> bytes:
             im = im.resize((max(1, int(sw * scale + 0.5)), max(1, int(sh * scale + 0.5))), Image.Resampling.LANCZOS)
         buf = BytesIO()
         im.save(buf, format="JPEG", quality=92, optimize=True, progressive=True)
-        return buf.getvalue()
+        return buf.getvalue(), "jpg"
     except ValueError:
         raise
     except Exception:
-        return data
+        return data, "jpg"
 
 
 def lib_save_cover(name: str, data: bytes) -> dict:
-    out = _cover_bytes(data)
+    import hashlib as _hashlib
+
+    out, fmt = _cover_bytes(data)
     stem = lib_card_name(name)
+    ver = _hashlib.md5(out).hexdigest()[:10]
     if lib_cdn_only():
         from crownauth.lib_cdn import publish as publish_cover
 
-        publish_cover(stem + ".cover.jpg", out)
+        publish_cover(stem + ".cover." + fmt, out)
     else:
-        path = lib_cover_path(name)
+        path = lib_cover_path(name, fmt)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(out)
     con = connect()
     con.execute("UPDATE libs SET has_cover=1 WHERE name=?", (lib_normalize_name(name),))
+    con.execute(
+        "INSERT INTO covers(stem, has_cover, ver, fmt) VALUES(?,1,?,?) "
+        "ON CONFLICT(stem) DO UPDATE SET has_cover=1, ver=excluded.ver, fmt=excluded.fmt",
+        (stem, ver, fmt),
+    )
     con.commit()
     con.close()
     try:
@@ -1425,23 +1658,24 @@ def lib_save_cover(name: str, data: bytes) -> dict:
         schedule_backup()
     except Exception:
         pass
-    return {"ok": True, "name": stem, "size": len(out), "cover": True}
+    return {"ok": True, "name": stem, "size": len(out), "cover": True, "ver": ver, "fmt": fmt}
 
 
 def lib_remove_cover(name: str) -> dict:
     """Delete the cover for a lib (local file and/or GitHub asset)."""
     stem = lib_card_name(name)
+    fmt = lib_cover_fmt(name)
     removed = False
     if lib_cdn_only():
         try:
             from crownauth.lib_cdn import remove as remove_cover
 
-            if remove_cover(stem + ".cover.jpg"):
+            if remove_cover(stem + ".cover." + fmt):
                 removed = True
         except Exception:
             pass
     else:
-        path = lib_cover_path(name)
+        path = lib_cover_path(name, fmt)
         try:
             if path.is_file():
                 path.unlink()
@@ -1451,6 +1685,7 @@ def lib_remove_cover(name: str) -> dict:
     try:
         con = connect()
         con.execute("UPDATE libs SET has_cover=0 WHERE name=?", (lib_normalize_name(name),))
+        con.execute("DELETE FROM covers WHERE stem=?", (lib_card_name(name),))
         con.commit()
         con.close()
     except Exception:

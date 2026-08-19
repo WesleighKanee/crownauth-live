@@ -1,5 +1,6 @@
 const $ = (s) => document.querySelector(s);
-let session = localStorage.getItem("rs_session") || "";
+// Reseller sessions are HttpOnly cookies; never persist bearer tokens in JS.
+let session = "";
 let me = null;
 
 function toast(msg, bad = false) {
@@ -12,12 +13,10 @@ function toast(msg, bad = false) {
 
 async function api(path, opts = {}) {
   const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
-  if (session) headers.Authorization = "Bearer " + session;
   const res = await fetch(path, { ...opts, headers, credentials: "same-origin" });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) {
     session = "";
-    localStorage.removeItem("rs_session");
     show(false);
     throw new Error(data.error || "Please log in");
   }
@@ -91,8 +90,6 @@ async function doResellerLogin() {
       body: JSON.stringify({ name: user ? user.value : "", password: pass ? pass.value : "" }),
     }).then((x) => x.json());
     if (!r.ok) throw new Error(r.error || "Login failed");
-    session = r.session;
-    localStorage.setItem("rs_session", session);
     show(true);
     await loadMe();
     await loadKeys();
@@ -132,7 +129,6 @@ setTimeout(() => {
 
 $("#btnLogout").onclick = () => {
   session = "";
-  localStorage.removeItem("rs_session");
   fetch("/reseller/api/logout", { method: "POST", credentials: "same-origin" });
   show(false);
 };

@@ -20,6 +20,9 @@ import crownauth.server as smod  # noqa: E402
 
 
 def main() -> None:
+    # Cloud entry is the production boundary.  Keeping this explicit prevents
+    # experience manifests from ever falling back to panel-local asset URLs.
+    os.environ.setdefault("APP_ENV", "production")
     port = int(os.environ.get("PORT") or 8787)
     pub = (os.environ.get("PUBLIC_HOST") or "").strip().lower()
     pub = pub.replace("https://", "").replace("http://", "").split("/")[0]
@@ -43,9 +46,10 @@ def main() -> None:
         print(f"persist heal: {ok_h} {msg_h}")
     except Exception as e:
         print(f"persist heal skip: {e}")
+    scheme = (os.environ.get("CLIENT_SCHEME") or "https").strip().lower().rstrip(":/")
     if pub:
         db.set_setting("client_api_host", pub)
-        db.set_setting("client_api_scheme", "https")
+        db.set_setting("client_api_scheme", scheme)
         db.set_setting("client_api_port", 0)
     db.set_setting("force_online", True)
     db.set_setting("hybrid_lease", True)

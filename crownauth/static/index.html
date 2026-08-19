@@ -13,6 +13,26 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" media="print" onload="this.media='all'" />
   <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" /></noscript>
   <link rel="stylesheet" href="/static/css/panel.css?v=ethereal5" />
+  <style>
+    [data-experience-director] fieldset{border:1px solid rgba(142,232,255,.18);border-radius:12px;padding:12px;margin:0 0 12px}
+    [data-experience-director] legend{padding:0 6px;color:#cfefff;font-weight:600}
+    .experience-preview{display:block;width:100%;height:150px;object-fit:cover;border-radius:10px;margin:0;background:#101827}
+    .experience-focal-picker{position:relative;margin:10px 0;border-radius:10px;overflow:hidden;background:#101827;touch-action:none;outline:1px solid rgba(142,232,255,.18)}
+    .experience-focal-picker:focus-within{outline:2px solid #7ddcff;outline-offset:2px}
+    .focal-marker{position:absolute;left:50%;top:50%;width:22px;height:22px;margin:-11px;border:2px solid #fff;border-radius:50%;background:rgba(125,220,255,.65);box-shadow:0 0 0 2px #101827;cursor:grab;touch-action:none}
+    .focal-marker:active{cursor:grabbing}
+    .experience-preview-modes .preview-mode.active{border-color:#7ddcff;color:#fff;background:rgba(125,220,255,.18)}
+    [data-experience-director][data-preview-mode="16:9"] .experience-focal-picker{aspect-ratio:16/9;height:auto}
+    [data-experience-director][data-preview-mode="20:9"] .experience-focal-picker{aspect-ratio:20/9;height:auto}
+    [data-experience-director][data-preview-mode="tablet"] .experience-focal-picker{aspect-ratio:4/3;height:auto}
+    [data-experience-director][data-preview-mode="desktop"] .experience-focal-picker{height:150px}
+    @media (max-width:720px){.experience-preview-modes .row{flex-wrap:wrap}.experience-slot .row{flex-wrap:wrap}}
+    .experience-slot progress{width:100%;height:8px;margin-top:10px}
+    .experience-slot .row{align-items:end;gap:8px}.experience-slot label{flex:1}.experience-slot output{font-family:monospace;min-width:3ch}
+    .experience-label-row,.experience-history-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.08)}
+    .experience-label-row code{min-width:100px}.experience-label-row input{flex:1}.experience-history-row{justify-content:space-between}
+    @media(prefers-reduced-motion:reduce){[data-experience-director] *,[data-experience-director] *::before,[data-experience-director] *::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+  </style>
 </head>
 <body>
   <!-- Owner login — simple Meta-style gate -->
@@ -73,6 +93,7 @@
         <button data-view="audit">Activity</button>
         <button data-view="resellers">Resellers</button>
         <button data-view="libs">Library</button>
+        <button data-view="experience">Experience</button>
         <button data-view="brand">Settings</button>
       </nav>
       <div class="side-foot">
@@ -413,7 +434,65 @@
         </div>
       </section>
 
+      <section id="view-experience" class="view hidden">
+        <div class="card" id="experienceDirector" data-experience-director>
+          <div class="section-heading">
+            <div><h3>Theme Director <span class="pill live">Remote experience</span></h3>
+              <p class="help">Stage a separate Login and Library experience, preview it, then publish or roll back safely. Changes stay in draft until you publish.</p></div>
+            <span class="pill" id="experienceRevision">Draft —</span>
+          </div>
+          <div class="grid two">
+            <div>
+              <fieldset class="experience-slot"><legend>Login visual</legend>
+                <label for="experienceLoginFile">Image or GIF</label>
+                <input id="experienceLoginFile" type="file" accept="image/jpeg,image/png,image/webp,image/gif" />
+                <progress id="experienceLoginProgress" max="100" value="0" hidden aria-label="Login upload progress"></progress>
+                <div class="experience-focal-picker" data-focal-picker="Login" role="application" aria-label="Login focal point picker">
+                  <img id="experienceLoginPreview" class="experience-preview" alt="Login experience server rendition preview" hidden />
+                  <button type="button" class="focal-marker" id="experienceLoginMarker" aria-label="Login focal point; drag or click to reposition" hidden></button>
+                </div>
+                <div class="row"><label>Focal X <input id="experienceLoginX" type="range" min="0" max="1" step="0.01" value="0.5" /></label><output id="experienceLoginXValue">0.50</output>
+                  <label>Focal Y <input id="experienceLoginY" type="range" min="0" max="1" step="0.01" value="0.5" /></label><output id="experienceLoginYValue">0.50</output></div>
+              </fieldset>
+              <fieldset class="experience-slot"><legend>Library visual</legend>
+                <label for="experienceLibraryFile">Image or GIF</label>
+                <input id="experienceLibraryFile" type="file" accept="image/jpeg,image/png,image/webp,image/gif" />
+                <progress id="experienceLibraryProgress" max="100" value="0" hidden aria-label="Library upload progress"></progress>
+                <div class="experience-focal-picker" data-focal-picker="Library" role="application" aria-label="Library focal point picker">
+                  <img id="experienceLibraryPreview" class="experience-preview" alt="Library experience server rendition preview" hidden />
+                  <button type="button" class="focal-marker" id="experienceLibraryMarker" aria-label="Library focal point; drag or click to reposition" hidden></button>
+                </div>
+                <div class="row"><label>Focal X <input id="experienceLibraryX" type="range" min="0" max="1" step="0.01" value="0.5" /></label><output id="experienceLibraryXValue">0.50</output>
+                  <label>Focal Y <input id="experienceLibraryY" type="range" min="0" max="1" step="0.01" value="0.5" /></label><output id="experienceLibraryYValue">0.50</output></div>
+              </fieldset>
+            </div>
+            <div>
+              <fieldset class="experience-preview-modes"><legend>Preview viewport</legend>
+                <p class="help">Check each rendition before publishing. The controls only affect this panel preview.</p>
+                <div class="row" role="group" aria-label="Preview viewport mode">
+                  <button type="button" id="experiencePreviewdesktop" class="btn ghost preview-mode active" data-preview-mode="desktop" aria-pressed="true">Desktop</button>
+                  <button type="button" id="experiencePreview169" class="btn ghost preview-mode" data-preview-mode="16:9" aria-pressed="false">16:9</button>
+                  <button type="button" id="experiencePreview209" class="btn ghost preview-mode" data-preview-mode="20:9" aria-pressed="false">20:9</button>
+                  <button type="button" id="experiencePreviewtablet" class="btn ghost preview-mode" data-preview-mode="tablet" aria-pressed="false">Tablet</button>
+                </div>
+              </fieldset>
+              <fieldset><legend>Theme settings</legend>
+                <div class="field"><label for="experiencePreset">Preset</label><select id="experiencePreset"><option value="CALM">Calm</option><option value="ETHEREAL">Ethereal</option><option value="CYBER">Cyber</option><option value="EMBER">Ember</option><option value="VOID">Void</option></select></div>
+                <div class="row"><div class="field"><label for="experienceMotion">Motion</label><select id="experienceMotion"><option value="STATIC">Static</option><option value="CALM">Calm</option><option value="BALANCED">Balanced</option></select></div><div class="field"><label for="experienceAccent">Accent</label><input id="experienceAccent" type="color" value="#7DDCFF" /></div></div>
+                <div class="row"><div class="field"><label for="experienceParallax">Parallax</label><select id="experienceParallax"><option value="OFF">Off</option><option value="TOUCH">Touch</option><option value="TOUCH_SENSOR">Touch sensor</option></select></div><div class="field"><label for="experienceParticles">Particles</label><select id="experienceParticles"><option value="NONE">None</option><option value="DUST">Dust</option><option value="SPARKS">Sparks</option><option value="GLOW">Glow</option></select></div><div class="field"><label for="experienceDensity">Density</label><input id="experienceDensity" type="number" min="0" max="1" step="0.01" value="0.25" /></div></div>
+                <label class="switch"><input id="experienceReduced" type="checkbox" /> Reduced motion by default</label>
+              </fieldset>
+              <fieldset><legend>Stable-ID display names</legend><div id="experienceLabels" class="experience-labels" aria-live="polite"><p class="help">Loading labels…</p></div></fieldset>
+            </div>
+          </div>
+          <div id="experienceError" class="login-err hidden" role="alert" aria-live="assertive"></div>
+          <p id="experienceStatus" class="help" role="status" aria-live="polite">No draft loaded.</p>
+          <div class="row" style="margin-top:10px"><button class="btn" id="experienceSave">Save draft</button><button class="btn primary" id="experiencePublish">Publish draft</button></div>
+          <details style="margin-top:14px"><summary>Publication history and rollback</summary><div id="experienceHistory" class="experience-history" aria-live="polite"><p class="help">Loading history…</p></div></details>
+        </div>
+      </section>
       <section id="view-libs" class="view hidden">
+
         <div class="card embedded-cover-card">
           <div class="section-heading">
             <div>
@@ -445,7 +524,7 @@
             </div>
             <div class="field" style="margin-top:8px"><label>File (.so)</label><input id="libFile" type="file" accept=".so" /></div>
             <div class="field" style="margin-top:8px"><label>Cover / banner (optional)</label><input id="libCover" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" /></div>
-            <p class="help">Any jpg / png / webp under 4 MB. We keep your photo as-is and the card fills itself (center, sharp). Re-upload Cover if an older file looks cropped.</p>
+            <p class="help">Any jpg / png / webp / <b>gif</b> under 15 MB. Static images are kept as-is and the card fills itself; <b>animated GIFs play on the deck cards</b> (in-game overlay + panel preview). Re-upload Cover if an older file looks cropped.</p>
             <button class="btn primary" id="btnLibUpload" style="margin-top:14px">Upload to library</button>
             <p class="help" style="margin-top:12px" id="libUploadOut"></p>
           </div>
@@ -507,5 +586,155 @@
   <div class="toast" id="toast"></div>
   <script src="/static/js/appearance.js?v=ethereal5"></script>
   <script src="/static/js/panel.js?v=ethereal5"></script>
+  <script>
+  (() => {
+    "use strict";
+    const root = document.querySelector("[data-experience-director]");
+    if (!root || window.__experienceDirectorReady) return;
+    window.__experienceDirectorReady = true;
+    const exp = { revision: 0, draftId: null, labels: [], previewUrls: {} };
+    const q = (id) => document.getElementById(id);
+    const status = (message, bad = false) => {
+      q("experienceStatus").textContent = message || "";
+      q("experienceError").textContent = bad ? message : "";
+      q("experienceError").classList.toggle("hidden", !bad);
+    };
+    const errorText = (data, fallback) => typeof data?.error === "object" ? (data.error.message || fallback) : (data?.error || fallback);
+    class ExperienceRequestError extends Error {
+      constructor(message, statusCode, code) { super(message); this.name = "ExperienceRequestError"; this.status = statusCode; this.code = code; }
+    }
+    async function experienceApi(path, options = {}) {
+      const headers = { ...(options.headers || {}) };
+      if (state.session) headers.Authorization = "Bearer " + state.session;
+      const response = await fetch(path, { ...options, headers, credentials: "same-origin" });
+      const data = await response.json().catch(() => ({}));
+      const detail = data?.error;
+      const message = typeof detail === "object" ? (detail.message || response.statusText || "Request failed") : (detail || response.statusText || "Request failed");
+      if (!response.ok || data.ok === false) throw new ExperienceRequestError(message, response.status, typeof detail === "object" ? detail.code : undefined);
+      return data;
+    }
+    function isConflict(error) { return Number(error?.status) === 409 || error?.code === "stale_revision" || error?.code === "conflict"; }
+    async function refreshAfterConflict(action) {
+      await loadExperience();
+      status("Conflict (409): the draft changed elsewhere. It was refreshed; review the values and retry " + action + ".", true);
+    }
+    function setValue(id, value, fallback) { const el = q(id); if (el) el.value = value == null ? fallback : value; }
+    function updateFocal(slot, axis) {
+      const el = q("experience" + slot + axis), out = q("experience" + slot + axis + "Value");
+      if (el && out) out.value = Number(el.value).toFixed(2);
+      const x = Number(q("experience" + slot + "X")?.value || 0.5);
+      const y = Number(q("experience" + slot + "Y")?.value || 0.5);
+      const image = q("experience" + slot + "Preview");
+      if (image) image.style.objectPosition = (x * 100) + "% " + (y * 100) + "%";
+      const marker = q("experience" + slot + "Marker");
+      if (marker) { marker.style.left = (x * 100) + "%"; marker.style.top = (y * 100) + "%"; marker.hidden = !image || image.hidden; }
+    }
+    function setFocalFromPointer(slot, event) {
+      const picker = event.currentTarget; const rect = picker.getBoundingClientRect();
+      const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+      const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+      q("experience" + slot + "X").value = x.toFixed(2); q("experience" + slot + "Y").value = y.toFixed(2);
+      updateFocal(slot, "X"); updateFocal(slot, "Y");
+    }
+    function configFromForm() {
+      return { preset: q("experiencePreset").value, motion: q("experienceMotion").value,
+        accent: q("experienceAccent").value, parallax: q("experienceParallax").value, particles: q("experienceParticles").value,
+        particle_density: Number(q("experienceDensity").value), reduced_motion_default: q("experienceReduced").checked };
+    }
+    const CLOUD_STABLE_IDS = ["AURASIA", "AUREXIA", "AURYNXIA", "AUVEXIA"];
+    function renderLabels(labels) {
+      const merged = new Map(CLOUD_STABLE_IDS.map((id) => [id, { id, stable_id: id, display_name: id }]));
+      (Array.isArray(labels) ? labels : []).forEach((label) => { const id = String(label.id || label.stable_id || "").trim().toUpperCase(); if (id) merged.set(id, { ...label, id, stable_id: id }); });
+      exp.labels = [...merged.values()];
+      const host = q("experienceLabels"); host.textContent = "";
+      exp.labels.forEach((label) => {
+        const row = document.createElement("div"); row.className = "experience-label-row"; row.dataset.stableId = label.id;
+        const id = document.createElement("code"); id.textContent = label.id; id.setAttribute("aria-label", "Stable ID " + label.id);
+        const input = document.createElement("input"); input.type = "text"; input.maxLength = 40; input.value = label.display_name || label.id; input.setAttribute("aria-label", "Display name for " + label.id);
+        const save = document.createElement("button"); save.type = "button"; save.className = "btn ghost"; save.textContent = "Save & publish";
+        save.addEventListener("click", async () => {
+          const name = input.value.trim(); if (!name) { status("Display name cannot be empty.", true); return; }
+          save.disabled = true; status("Publishing display name?");
+          try { await experienceApi("/api/library/display-name", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "label-" + label.id + "-" + Date.now() }, body: JSON.stringify({ stable_id: label.id, display_name: name, expected_revision: exp.revision }) }); await loadExperience(); status("Display name published."); }
+          catch (e) { if (isConflict(e)) await refreshAfterConflict("display name"); else status(e.message, true); } finally { save.disabled = false; }
+        });
+        row.append(id, input, save); host.append(row);
+      });
+    }
+    function renderHistory(items) {
+      const host = q("experienceHistory"); host.textContent = "";
+      if (!items?.length) { host.innerHTML = '<p class="help">No published revisions yet.</p>'; return; }
+      items.forEach((item) => {
+        const row = document.createElement("div"); row.className = "experience-history-row";
+        const text = document.createElement("span"); text.textContent = "Revision " + (item.revision ?? item.manifest_revision ?? item.id) + " — " + (item.status || "archived");
+        const button = document.createElement("button"); button.className = "btn ghost"; button.type = "button"; button.textContent = "Rollback";
+        button.addEventListener("click", async () => {
+          if (!window.confirm("Rollback to this revision? This creates a new publication.")) return;
+          button.disabled = true; status("Rolling back…");
+          try { await experienceApi("/api/experience/rollback", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "rollback-" + (item.id || item.revision) + "-" + Date.now() }, body: JSON.stringify({ revision_id: item.id || item.revision, expected_revision: exp.revision }) }); await loadExperience(); status("Rollback published."); }
+          catch (e) { status(e.message, true); } finally { button.disabled = false; }
+        });
+        row.append(text, button); host.append(row);
+      });
+    }
+    async function loadExperience() {
+      try {
+        const data = await experienceApi("/api/experience/draft");
+        const d = data.draft || {}; const c = d.config || {};
+        exp.revision = Number(data.manifest_revision || 0); exp.draftId = d.id || data.draft_id || null;
+        q("experienceRevision").textContent = "Revision " + exp.revision + " ? draft";
+        setValue("experiencePreset", c.preset, "CALM"); setValue("experienceMotion", c.motion, "BALANCED"); setValue("experienceAccent", c.accent, "#7DDCFF"); setValue("experienceParallax", c.parallax, "TOUCH_SENSOR"); setValue("experienceParticles", c.particles, "DUST");
+        setValue("experienceDensity", c.particle_density, 0.25); q("experienceReduced").checked = c.reduced_motion_default === true;
+        setValue("experienceLoginX", d.login_focal_x, 0.5); setValue("experienceLoginY", d.login_focal_y, 0.5); setValue("experienceLibraryX", d.library_focal_x, 0.5); setValue("experienceLibraryY", d.library_focal_y, 0.5);
+        ["Login", "Library"].forEach((slot) => ["X", "Y"].forEach((axis) => updateFocal(slot, axis)));
+        let cloudLabels = []; try { const libs = await experienceApi("/api/libs"); cloudLabels = (libs.libs || []).map((item) => ({ id: item.card || item.stable_id || String(item.name || "").replace(/^lib/i, "").replace(/\.so$/i, ""), display_name: item.display_name || item.card })); } catch (_) {}
+        renderLabels([...(d.labels || []), ...cloudLabels]);
+        const history = await experienceApi("/api/experience/history?limit=20"); renderHistory(history.items || []);
+      } catch (e) { status("Unable to load Theme Director: " + e.message, true); }
+    }
+    async function saveDraft() {
+      const button = q("experienceSave"); button.disabled = true; status("Saving draft?");
+      try { await experienceApi("/api/experience/draft", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ theme: configFromForm(), expected_revision: exp.revision, login_focal_x: Number(q("experienceLoginX").value), login_focal_y: Number(q("experienceLoginY").value), library_focal_x: Number(q("experienceLibraryX").value), library_focal_y: Number(q("experienceLibraryY").value) }) }); await loadExperience(); status("Draft saved. Publish when ready."); }
+      catch (e) { if (isConflict(e)) await refreshAfterConflict("saving"); else status(e.message, true); } finally { button.disabled = false; }
+    }
+    async function publishDraft() {
+      if (!window.confirm("Publish this draft to all clients? This creates a new immutable experience revision.")) return;
+      const button = q("experiencePublish"); button.disabled = true; status("Publishing?");
+      try { await experienceApi("/api/experience/publish", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "experience-publish-" + exp.revision + "-" + Date.now() }, body: JSON.stringify({ expected_revision: exp.revision }) }); await loadExperience(); status("Published successfully."); }
+      catch (e) { if (isConflict(e)) await refreshAfterConflict("publishing"); else status(e.message, true); } finally { button.disabled = false; }
+    }
+    function setServerPreview(slot, payload) {
+      const source = payload?.renditions || payload?.asset?.renditions || [];
+      const rendition = source.map((item) => item && (item.url ? item : (item.cdn_name ? { ...item, url: "/v2/experience/assets/" + encodeURIComponent(item.cdn_name) } : item))).find((item) => item && item.url);
+      if (!rendition) return false;
+      const previous = exp.previewUrls[slot]; if (previous && previous.startsWith("blob:")) URL.revokeObjectURL(previous);
+      exp.previewUrls[slot] = rendition.url; const preview = q("experience" + slot + "Preview"); preview.src = rendition.url; preview.hidden = false; preview.alt = slot + " experience server rendition preview"; updateFocal(slot, "X"); updateFocal(slot, "Y"); return true;
+    }
+    function upload(slot) {
+      const file = q("experience" + slot + "File").files[0]; if (!file) return;
+      const progress = q("experience" + slot + "Progress"); progress.hidden = false; progress.value = 0; status("Uploading " + slot.toLowerCase() + " visual?");
+      const xhr = new XMLHttpRequest(); xhr.open("POST", "/api/experience/assets?slot=" + slot.toLowerCase() + "&expected_revision=" + encodeURIComponent(exp.revision)); xhr.withCredentials = true;
+      if (state.session) xhr.setRequestHeader("Authorization", "Bearer " + state.session); xhr.setRequestHeader("X-Expected-Revision", String(exp.revision));
+      xhr.upload.onprogress = (event) => { if (event.lengthComputable) progress.value = Math.round(event.loaded * 100 / event.total); };
+      xhr.onload = async () => { progress.value = 100; let body = {}; try { body = JSON.parse(xhr.responseText); } catch (_) {}
+        if (xhr.status >= 200 && xhr.status < 300 && body.ok !== false) { setServerPreview(slot, body); await loadExperience(); status(slot + " visual uploaded; server rendition loaded into preview."); }
+        else if (xhr.status === 409) { await refreshAfterConflict("uploading"); } else status(errorText(body, "Upload failed"), true);
+      };
+      xhr.onerror = () => status("Upload failed ? check the file and connection.", true); xhr.send(file);
+    }
+    function wireFocalPicker(slot) {
+      const picker = document.querySelector('[data-focal-picker="' + slot + '"]'); const marker = q("experience" + slot + "Marker"); if (!picker) return;
+      let dragging = false; const move = (event) => { if (dragging) setFocalFromPointer(slot, event); };
+      picker.addEventListener("pointerdown", (event) => { dragging = true; picker.setPointerCapture?.(event.pointerId); setFocalFromPointer(slot, event); });
+      picker.addEventListener("pointermove", move); picker.addEventListener("pointerup", () => { dragging = false; }); picker.addEventListener("pointercancel", () => { dragging = false; });
+      marker?.addEventListener("keydown", (event) => { const step = event.shiftKey ? 0.1 : 0.01; let x = Number(q("experience" + slot + "X").value), y = Number(q("experience" + slot + "Y").value); if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(event.key)) { event.preventDefault(); if (event.key === "ArrowLeft") x -= step; if (event.key === "ArrowRight") x += step; if (event.key === "ArrowUp") y -= step; if (event.key === "ArrowDown") y += step; q("experience" + slot + "X").value = Math.max(0, Math.min(1, x)).toFixed(2); q("experience" + slot + "Y").value = Math.max(0, Math.min(1, y)).toFixed(2); updateFocal(slot, "X"); updateFocal(slot, "Y"); } });
+    }
+    ["Login", "Library"].forEach((slot) => { q("experience" + slot + "File").addEventListener("change", () => upload(slot)); ["X", "Y"].forEach((axis) => q("experience" + slot + axis).addEventListener("input", () => updateFocal(slot, axis))); wireFocalPicker(slot); });
+    document.querySelectorAll("[data-preview-mode]").forEach((button) => button.addEventListener("click", () => { const mode = button.dataset.previewMode; root.dataset.previewMode = mode; document.querySelectorAll("[data-preview-mode]").forEach((b) => { const active = b === button; b.classList.toggle("active", active); b.setAttribute("aria-pressed", String(active)); }); }));
+    q("experienceSave").addEventListener("click", saveDraft); q("experiencePublish").addEventListener("click", publishDraft);
+    document.addEventListener("click", (event) => { const nav = event.target.closest('[data-view="experience"], [data-view="libs"]'); if (nav) setTimeout(loadExperience, 0); });
+    if (state.authed) loadExperience();
+  })();
+  </script>
 </body>
 </html>

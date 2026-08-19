@@ -25,8 +25,26 @@ RESELLER_SESSIONS: dict[str, dict] = {}  # token -> {exp, id, name}
 SESSION_TTL = 12 * 3600
 
 
+def _secret_paths() -> tuple[Path, Path, Path]:
+    """Resolve secrets at call time so isolated DB tests never touch repo secrets."""
+    override = (os.environ.get("CROWNAUTH_SECRETS") or "").strip()
+    if override:
+        root = Path(override)
+    else:
+        # db.DATA is patched to a temporary directory by the unittest suite.
+        # Use the matching sibling secrets directory in that case, while
+        # preserving the normal production location for real deployments.
+        try:
+            from . import db
+            data = Path(db.DATA)
+            root = data / "secrets" if data != ROOT / "data" else SECRETS
+        except Exception:
+            root = SECRETS
+    return root, root / "owner_password.hash", root / "owner_api_token"
+
+
 def ensure_dirs() -> None:
-    SECRETS.mkdir(parents=True, exist_ok=True)
+    _secret_paths()[0].mkdir(parents=True, exist_ok=True)
 
 
 def _hash_password(password: str, salt: bytes) -> bytes:
@@ -41,7 +59,7 @@ def _hash_password(password: str, salt: bytes) -> bytes:
 
 
 def has_password() -> bool:
-    return PASS_PATH.exists()
+    return _secret_paths()[1].exists()
 
 
 def set_password(password: str) -> None:
@@ -50,17 +68,19 @@ def set_password(password: str) -> None:
         raise ValueError("Owner password must be at least 10 characters")
     salt = secrets.token_bytes(16)
     dk = _hash_password(password, salt)
-    PASS_PATH.write_bytes(salt + dk)
+    pass_path = _secret_paths()[1]
+    pass_path.write_bytes(salt + dk)
     try:
-        os.chmod(PASS_PATH, 0o600)
+        os.chmod(pass_path, 0o600)
     except OSError:
         pass
 
 
 def verify_password(password: str) -> bool:
-    if not PASS_PATH.exists():
+    pass_path = _secret_paths()[1]
+    if not pass_path.exists():
         return False
-    raw = PASS_PATH.read_bytes()
+    raw = pass_path.read_bytes()
     if len(raw) < 48:
         return False
     salt, dk = raw[:16], raw[16:48]
@@ -73,12 +93,13 @@ def verify_password(password: str) -> bool:
 
 def load_or_create_api_token() -> str:
     ensure_dirs()
-    if TOKEN_PATH.exists():
-        return TOKEN_PATH.read_text(encoding="utf-8").strip()
+    token_path = _secret_paths()[2]
+    if token_path.exists():
+        return token_path.read_text(encoding="utf-8").strip()
     tok = secrets.token_urlsafe(32)
-    TOKEN_PATH.write_text(tok + "\n", encoding="utf-8")
+    token_path.write_text(tok + "\n", encoding="utf-8")
     try:
-        os.chmod(TOKEN_PATH, 0o600)
+        os.chmod(token_path, 0o600)
     except OSError:
         pass
     return tok
@@ -158,7 +179,7 @@ def check_owner_header(auth_header: Optional[str], x_owner_key: Optional[str], c
 def bootstrap_if_needed() -> str:
     """Create password if missing — returns plaintext once (or env override)."""
     ensure_dirs()
-    note = SECRETS / "OWNER_PASSWORD_ONCE.txt"
+    note = _secret_paths()[0] / "OWNER_PASSWORD_ONCE.txt"
     # Cloud: OWNER_PASSWORD env used when no local hash yet (after wipe),
     # or when FORCE_OWNER_PASSWORD=1. After Settings change we sync env so next wipe restores it.
     env_pw = (os.environ.get("OWNER_PASSWORD") or "").strip()
